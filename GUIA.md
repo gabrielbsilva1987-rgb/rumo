@@ -38,3 +38,19 @@ Você pode mudar tudo em **Ajustes**: metas, horários, dias da semana e tipos d
 - **A notificação de teste não chega:** confira se o app foi aberto pelo ícone, e não pelo Safari, e se as notificações estão permitidas em *Ajustes do iPhone → Notificações → Rumo*. Depois toque em **Ativar lembretes** de novo.
 - **Mudei algo e o iPhone não atualizou:** feche o app (deslize para cima) e abra de novo.
 - **O app dos remédios continua igual?** Sim. Os dados do Rumo ficam em tabelas próprias, e o seu pai não tem acesso a eles.
+
+## App Saúde (calorias, passos e treinos)
+
+O iPhone não deixa o Rumo ler o app Saúde diretamente. Quem faz a ponte é o app **Atalhos**: ele lê os dados do dia e envia ao Rumo.
+
+1. No Rumo, abra **Ajustes → App Saúde → Configurar o atalho** e copie o seu endereço pessoal. Não compartilhe esse endereço.
+2. Monte o atalho **Rumo Saúde** seguindo o passo a passo que aparece no app:
+   - Encontrar Amostras de Saúde (**Energia Ativa**, hoje, agrupado por dia) → **Calcular Estatísticas: Soma**
+   - O mesmo para **Passos**
+   - Encontrar Amostras de Saúde (**Exercícios**, hoje) → **Contar**
+   - **Obter Conteúdo do URL**: POST, JSON, com os campos `calorias`, `passos` e `treinos`
+3. Crie uma **automação** diária (ex.: 23:30) com **Executar Imediatamente**.
+
+Treino registrado no Apple Watch ou em outro app marca o **Treino** do dia sozinho. Calorias e passos aparecem em **Hoje** e em **Progresso**, e não entram na % dos hábitos. As metas de calorias e passos são opcionais, em Ajustes.
+
+Se as calorias vierem maiores que no app Saúde, adicione o filtro **Fonte é seu Apple Watch** nas buscas de calorias e passos.

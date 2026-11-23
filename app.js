@@ -11,8 +11,14 @@ const H_BASE = {
 };
 const BASE = Object.keys(H_BASE);
 // Hábitos criados por você ficam em S.cfg.extras
-const info = (h) => H_BASE[h] || (S.cfg.extras || []).find((x) => x.id === h) || { nome: "Hábito", emoji: "⭐", cor: "var(--acc)" };
-const hc = (h, c = S.cfg) => c[h] || (c.extras || []).find((x) => x.id === h) || {};
+// Dados que chegam do app Saúde (pelo app Atalhos). Não contam na % do dia.
+const H_SAUDE = {
+  calorias: { nome: "Calorias ativas", emoji: "🔥", cor: "#ff9f43", un: "kcal" },
+  passos: { nome: "Passos", emoji: "👟", cor: "#3ddbb0", un: "passos" },
+};
+const URL_SAUDE = "https://dhxcptqgwfhlaqvfodxp.supabase.co/functions/v1/saude";
+const info = (h) => H_BASE[h] || H_SAUDE[h] || (S.cfg.extras || []).find((x) => x.id === h) || { nome: "Hábito", emoji: "⭐", cor: "var(--acc)" };
+const hc = (h, c = S.cfg) => H_SAUDE[h] ? { ativo: true, meta: +(c.saude?.[`meta_${h}`]) || 0 } : c[h] || (c.extras || []).find((x) => x.id === h) || {};
 const lista = () => [...BASE, ...(S.cfg.extras || []).filter((x) => x.ativo !== false)
   .sort((a, b) => (a.hora || "99").localeCompare(b.hora || "99")).map((x) => x.id)];
 const ICONES = ["🧘","🙏","🏃","🚶","🚴","🏊","🤸","⚽","🥗","🍎","🥦","🍳","🥩","☕","🚭","🍬","💊","🦷","🧴","🛁","😴","📵","💻","✍️","📝","📓","🎧","🎸","🎹","🎨","🧠","🗣️","🌎","💰","💵","📊","🧹","🧺","🌱","🌞","🙌","❤️","👨‍👩‍👧","📞","🐶","🎯","✅","⭐"];
@@ -34,10 +40,11 @@ const CFG_PADRAO = {
   revisao: { dia: 0, hora: "17:00" },
   fechamento: "21:30",
   extras: [],
+  saude: { meta_calorias: 0, meta_passos: 0 },
 };
 function mesclarCfg(d) {
   const c = { ...CFG_PADRAO, ...(d || {}) };
-  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao"]) c[k] = { ...CFG_PADRAO[k], ...((d || {})[k] || {}) };
+  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao", "saude"]) c[k] = { ...CFG_PADRAO[k], ...((d || {})[k] || {}) };
   return c;
 }
 
@@ -170,11 +177,16 @@ function semearDemo(G) {
     push("agua", rnd() < bom ? 3000 : 1500 + Math.round(rnd() * 5) * 250);
     if (c.exercicio.dias.includes(s) && rnd() < bom + 0.05) push("exercicio", 2, { tipos: ["Academia", "Cardio"] });
     if (c.estudo.dias.includes(s)) push("estudo", rnd() < bom ? 30 + (rnd() < 0.3 ? 15 : 0) : 15);
+    push("calorias", 350 + Math.round(rnd() * 500), { em: new Date().toISOString() });
+    push("passos", 4000 + Math.round(rnd() * 8000), { em: new Date().toISOString() });
     if (s === 0) pesos.push({ id: i, data: d, kg: Math.round((139 - (48 - i) * 0.13 + (rnd() - 0.5) * 0.8) * 10) / 10 });
   }
   regs.push({ data: hj, habito: "sono", valor: 7.5, detalhe: { deitou: "22:30" }, feito: true });
   regs.push({ data: hj, habito: "leitura", valor: 20, detalhe: {}, feito: true });
   regs.push({ data: hj, habito: "agua", valor: 1500, detalhe: {}, feito: false });
+  regs.push({ data: hj, habito: "calorias", valor: 412, detalhe: { em: new Date().toISOString() }, feito: true });
+  regs.push({ data: hj, habito: "passos", valor: 6830, detalhe: { em: new Date().toISOString() }, feito: true });
+  regs.push({ data: hj, habito: "exercicio", valor: 1, detalhe: { tipos: [], auto: 1 }, feito: true });
   const ultDom = addDias(domingoDe(hj), -7);
   const revs = [{ semana: ultDom, dados: { nota: 4, pct: 81, funcionou: "Ler logo depois do café.", atrapalhou: "Dormi tarde na quinta.", foco: "Deitar até 23h todos os dias" } }];
   const t0 = new Date(Date.now() - 864e5 * 60).toISOString();
@@ -185,7 +197,7 @@ function semearDemo(G) {
     { id: 4, titulo: "Essencialismo", autor: "Greg McKeown", paginas: 272, pagina_atual: 118, status: "lendo", inicio: addDias(hj, -11), fim: null, capa: null, criado_em: new Date().toISOString() },
     { id: 5, titulo: "Sapiens", autor: "Yuval Noah Harari", paginas: 464, pagina_atual: 0, status: "quero", inicio: null, fim: null, capa: null, criado_em: new Date().toISOString() },
   ]);
-  G("cfg", {}); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
+  G("cfg", { saude: { meta_passos: 8000, chave: "demo" } }); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
 }
 
 /* ============================ Regras dos hábitos ============================ */
@@ -431,7 +443,9 @@ function cartaoHabito(h, d) {
     const tipos = c.exercicio.tipos?.length ? c.exercicio.tipos : ["Treino"];
     const feitos = r?.detalhe?.tipos || [];
     sub = `${prog ? fmtHora(c.exercicio.hora) : "Dia livre (bônus se treinar)"}${seqTxt}`;
-    corpo = `<div class="acoes">${tipos.map((t) => `<button class="b ${feitos.includes(t) ? "on" : ""}" data-a="treino" data-d="${d}" data-t="${esc(t)}">${feitos.includes(t) ? "✓ " : ""}${esc(t)}</button>`).join("")}</div>`;
+    const auto = r?.detalhe?.auto;
+    corpo = `<div class="acoes">${tipos.map((t) => `<button class="b ${feitos.includes(t) ? "on" : ""}" data-a="treino" data-d="${d}" data-t="${esc(t)}">${feitos.includes(t) ? "✓ " : ""}${esc(t)}</button>`).join("")}</div>
+      ${auto ? `<p class="sub" style="margin:10px 0 0">⌚ ${auto} ${auto === 1 ? "treino registrado" : "treinos registrados"} no app Saúde</p>` : ""}`;
   }
 
   if (!H_BASE[h]) {
@@ -462,6 +476,22 @@ function cartaoPeso(d) {
   return `<section class="habito ${deHoje ? "ok" : ""}" style="--c:var(--peso)">
     <div class="h-topo"><div class="h-ico">⚖️</div><div class="h-nome"><b>Pesagem da semana</b><span>${deHoje ? "Registrado hoje" : "Em jejum, depois do banheiro"}</span></div><div class="h-check">${deHoje ? "✓" : ""}</div></div>
     ${deHoje ? `<div class="h-valor"><b>${num(deHoje.kg)}</b><span>kg</span></div>` : `<div class="acoes"><button class="b cor" data-a="novoPeso">Registrar peso</button></div>`}
+  </section>`;
+}
+
+function cartaoSaude(d) {
+  const cal = reg(d, "calorias"), pas = reg(d, "passos"), sc = S.cfg.saude || {};
+  if (!sc.chave && !cal && !pas) return "";
+  const em = [cal, pas].map((r) => r?.detalhe?.em).filter(Boolean).sort().pop();
+  const item = (h, r) => {
+    const meta = hc(h).meta, v = r?.valor || 0;
+    return `<div class="mini" style="--c:${H_SAUDE[h].cor}"><span>${H_SAUDE[h].emoji} ${H_SAUDE[h].nome}</span>
+      <b>${r ? num(v, 0) : "—"}${meta ? ` <small class="sub">/ ${num(meta, 0)}</small>` : ""}</b>${meta ? barra(v / meta) : ""}</div>`;
+  };
+  return `<section class="habito saude" style="--c:#ff9f43">
+    <div class="h-topo"><div class="h-ico">⌚</div><div class="h-nome"><b>Atividade</b><span>${em ? `Do app Saúde · atualizado às ${new Date(em).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" })}` : "Do app Saúde · ainda sem dados hoje"}</span></div></div>
+    <div class="grid2">${item("calorias", cal)}${item("passos", pas)}</div>
+    ${!em && d === hoje() ? `<p class="sub" style="margin:10px 0 0">Os dados chegam quando o atalho "Rumo Saúde" roda. Você pode rodá-lo agora pelo app Atalhos.</p>` : ""}
   </section>`;
 }
 
@@ -496,7 +526,7 @@ function telaHoje() {
     <div class="chips-linha">${seq ? `<span class="pilula acc">🔥 ${seq} ${seq === 1 ? "dia" : "dias"} no ritmo</span>` : ""}${perdeu > 0 ? `<span class="pilula">−${num(perdeu)} kg</span>` : ""}</div></div></section>`;
   if (rev) h += `<div class="foco"><span>🎯</span><div><b>Foco da semana</b>${esc(rev.dados.foco)}</div></div>`;
   h += cartaoPeso(d);
-  for (const k of lista()) h += cartaoHabito(k, d);
+  for (const k of lista()) { h += cartaoHabito(k, d); if (k === "exercicio") h += cartaoSaude(d); }
   return h;
 }
 
@@ -525,7 +555,7 @@ function graficoBarras(h, de, ate) {
   const c = S.cfg, dias = [];
   for (let d = de; d <= ate; d = addDias(d, 1)) dias.push(d);
   const binario = h === "exercicio" || hc(h).tipo === "check";
-  const meta = binario ? 1 : hc(h).meta;
+  const meta = binario ? 1 : hc(h).meta || 0;
   const vals = dias.map((d) => (binario ? (reg(d, h)?.valor ? 1 : 0) : reg(d, h)?.valor || 0));
   const cor0 = info(h).cor;
   const max = Math.max(meta * 1.3, ...vals);
@@ -533,11 +563,11 @@ function graficoBarras(h, de, ate) {
   const yMeta = Hh - (meta / max) * Hh;
   return `<svg class="grafico" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none" style="height:56px">
     ${dias.map((d, i) => {
-      const v = vals[i], hh = Math.max(v ? 3 : 2, (v / max) * Hh), ok = feito(d, h), prog = programado(h, d);
+      const v = vals[i], hh = Math.max(v ? 3 : 2, (v / max) * Hh), ok = feito(d, h), prog = !H_SAUDE[h] && programado(h, d);
       const cor = ok ? cor0 : v ? `color-mix(in srgb, ${cor0} 40%, var(--card2))` : prog ? "rgba(255,95,109,.35)" : "var(--card2)";
       return `<rect x="${(i * (bw + gap)).toFixed(2)}" y="${(Hh - hh).toFixed(2)}" width="${bw.toFixed(2)}" height="${hh.toFixed(2)}" rx="${Math.min(3, bw / 2)}" fill="${cor}"/>`;
     }).join("")}
-    ${!binario ? `<line x1="0" x2="${W}" y1="${yMeta}" y2="${yMeta}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
+    ${!binario && meta ? `<line x1="0" x2="${W}" y1="${yMeta}" y2="${yMeta}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
   </svg>`;
 }
 
@@ -584,6 +614,21 @@ function telaProgresso() {
     <div class="cal">${cal}</div>
     <div class="legenda">menos <i style="background:${corPct(0)}"></i><i style="background:${corPct(0.4)}"></i><i style="background:${corPct(0.6)}"></i><i style="background:${corPct(0.85)}"></i><i style="background:${corPct(1)}"></i> mais</div>
   </section>`;
+
+  // Atividade (app Saúde)
+  const temSaude = ["calorias", "passos"].some((k) => { for (let d = de; d <= ate; d = addDias(d, 1)) if (reg(d, k)) return true; return false; });
+  if (temSaude) {
+    h += `<div class="titulo-sec">Atividade · app Saúde</div>`;
+    for (const k of ["calorias", "passos"]) {
+      let soma = 0, n = 0, melhor = 0, naMeta = 0;
+      for (let d = de; d <= ate; d = addDias(d, 1)) { const r = reg(d, k); if (r) { soma += r.valor; n++; melhor = Math.max(melhor, r.valor); if (r.feito) naMeta++; } }
+      const meta = hc(k).meta;
+      h += `<section class="cartao hab-stat" style="--c:${H_SAUDE[k].cor}">
+        <div class="h-topo"><div class="h-ico">${H_SAUDE[k].emoji}</div><div class="h-nome"><b>${H_SAUDE[k].nome}</b><span>${n} ${n === 1 ? "dia" : "dias"} com dados${meta ? ` · meta ${num(meta, 0)}` : ""}</span></div>${meta ? `<div class="pct">${n ? Math.round((naMeta / n) * 100) : 0}%</div>` : ""}</div>
+        ${graficoBarras(k, de, ate)}
+        <div class="grid2"><div class="mini"><b>${num(n ? soma / n : 0, 0)}</b><span>${H_SAUDE[k].un} por dia (média)</span></div><div class="mini"><b>${num(melhor, 0)}</b><span>melhor dia</span></div></div></section>`;
+    }
+  }
 
   // Por hábito
   h += `<div class="titulo-sec">Hábito por hábito</div>`;
@@ -842,6 +887,12 @@ function telaAjustes() {
       <div class="linha"><label class="campo"><span>Minutos por dia</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label>
       <label class="campo"><span>Lembrete</span><input type="time" name="estudo.hora" value="${c.estudo.hora}"></label></div>
       <label class="campo"><span>Dias</span>${seletorDias("estudo.dias", c.estudo.dias)}</label>`)}
+    <details class="aj" style="--c:#ff9f43"><summary><span class="h-ico">⌚</span>App Saúde</summary><div class="corpo">
+      <p class="sub" style="margin-top:0">Calorias ativas, passos e treinos chegam do app Saúde pelo app Atalhos. Treino registrado no relógio marca o Treino do dia sozinho.</p>
+      <div class="linha"><label class="campo"><span>Meta de calorias (kcal)</span><input type="number" name="saude.meta_calorias" min="0" step="50" value="${c.saude.meta_calorias || ""}" placeholder="opcional"></label>
+      <label class="campo"><span>Meta de passos</span><input type="number" name="saude.meta_passos" min="0" step="500" value="${c.saude.meta_passos || ""}" placeholder="opcional"></label></div>
+      <button type="button" class="b largo" data-a="configSaude">📲 Configurar o atalho</button>
+    </div></details>
     <details class="aj" style="--c:var(--peso)"><summary><span class="h-ico">⚖️</span>Peso e revisão</summary><div class="corpo">
       <div class="linha"><label class="campo"><span>Peso inicial (kg)</span><input type="number" name="peso.inicial" step="0.1" value="${c.peso.inicial}"></label>
       <label class="campo"><span>Meta (kg)</span><input type="number" name="peso.meta" step="0.1" value="${c.peso.meta}"></label></div>
@@ -923,11 +974,11 @@ const ACOES = {
   },
   apagarSono(el) { fecharModal(); apagarReg("sono", el.dataset.d); },
   treino(el) {
-    const { d, t } = el.dataset, r = reg(d, "exercicio");
+    const { d, t } = el.dataset, r = reg(d, "exercicio"), auto = r?.detalhe?.auto;
     let tipos = [...(r?.detalhe?.tipos || [])];
     tipos = tipos.includes(t) ? tipos.filter((x) => x !== t) : [...tipos, t];
-    if (!tipos.length) return apagarReg("exercicio", d);
-    salvarReg("exercicio", d, tipos.length, { tipos });
+    if (!tipos.length && !auto) return apagarReg("exercicio", d);
+    salvarReg("exercicio", d, Math.max(tipos.length, auto ? 1 : 0), { tipos, ...(auto ? { auto } : {}) });
   },
   novoPeso() {
     const ult = S.pesos[S.pesos.length - 1];
@@ -979,6 +1030,40 @@ const ACOES = {
     const c = structuredClone(S.cfg);
     c.leitura.livro_atual = +el.dataset.id || el.dataset.id;
     try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); render(); toast("📖 As páginas do dia vão para este livro"); } catch (e) { erro(e); }
+  },
+  async configSaude() {
+    let c = S.cfg;
+    if (!c.saude?.chave) {
+      c = structuredClone(S.cfg);
+      const a = new Uint8Array(24); crypto.getRandomValues(a);
+      c.saude = { ...(c.saude || {}), chave: [...a].map((b) => b.toString(16).padStart(2, "0")).join("") };
+      try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); } catch (e) { return erro(e); }
+    }
+    const end = `${URL_SAUDE}?chave=${S.cfg.saude.chave}`;
+    abrirModal(`<h3>📲 Atalho "Rumo Saúde"</h3>
+      <p class="sub" style="margin-top:0">Faça uma vez só, no app <b>Atalhos</b> do iPhone. Depois ele roda sozinho.</p>
+      <label class="campo"><span>Seu endereço pessoal (não compartilhe)</span><input type="text" readonly value="${end}" id="endSaude"></label>
+      <button class="b prim largo" data-a="copiarSaude">📋 Copiar endereço</button>
+      <ol class="passos">
+        <li>No app <b>Atalhos</b>, toque em <b>+</b> e dê o nome <b>Rumo Saúde</b>.</li>
+        <li>Adicione <b>Encontrar Amostras de Saúde</b> (busque por "amostras"). Configure: <b>Tipo</b> é <b>Energia Ativa</b>, <b>Data de Início</b> é <b>Hoje</b>, e <b>Agrupar por: Dia</b>.</li>
+        <li>Adicione <b>Calcular Estatísticas</b> → <b>Soma</b>.</li>
+        <li>Repita os passos 2 e 3 com o tipo <b>Passos</b>.</li>
+        <li>Adicione outra <b>Encontrar Amostras de Saúde</b> com <b>Tipo</b> é <b>Exercícios</b> (Workouts) e <b>Data de Início</b> é <b>Hoje</b>. Depois adicione <b>Contar</b> → <b>Itens</b>.</li>
+        <li>Adicione <b>Obter Conteúdo do URL</b>. Cole o endereço copiado. Em <b>Mostrar Mais</b>: Método <b>POST</b>, Corpo da Solicitação <b>JSON</b>, e adicione 3 campos do tipo <b>Número</b>:
+          <br>• <code>calorias</code> = Estatísticas (a 1ª)
+          <br>• <code>passos</code> = Estatísticas (a 2ª)
+          <br>• <code>treinos</code> = Contagem</li>
+        <li>(Opcional) Adicione <b>Mostrar Notificação</b> com o <b>Conteúdo do URL</b>, para ver "✅ Rumo atualizado".</li>
+        <li>Rode o atalho uma vez e permita o acesso ao Saúde. Os números aparecem no Rumo.</li>
+        <li>Para rodar sozinho: aba <b>Automação</b> → <b>+</b> → <b>Hora do Dia</b> → <b>23:30</b>, <b>Diariamente</b>, marque <b>Executar Imediatamente</b> e escolha <b>Rumo Saúde</b>. Se quiser ver ao longo do dia, crie outras automações (ex.: 12:00 e 19:00).</li>
+      </ol>
+      <p class="sub">💡 Na primeira vez, compare as calorias com o app Saúde. Se o número vier maior, abra os passos 2 e 4 e adicione o filtro <b>Fonte</b> é <b>seu Apple Watch</b>.</p>`);
+  },
+  async copiarSaude() {
+    const v = $("#endSaude").value;
+    try { await navigator.clipboard.writeText(v); toast("📋 Endereço copiado"); }
+    catch { $("#endSaude").select(); toast("Toque e segure para copiar"); }
   },
   novoHabito() { modalHabito(null); },
   editarHabito(el) { modalHabito((S.cfg.extras || []).find((x) => x.id === el.dataset.id)); },
@@ -1141,6 +1226,7 @@ function aplicarCampos(c, f, fd, nomes) {
     else if (tipo === "checkbox") v = el.checked;
     else if (k === "litros") { if (g) c[g].meta = Math.round(parseFloat(fd.get(n)) * 1000) || c[g].meta; continue; }
     else if (k === "tipos") v = String(fd.get(n)).split(",").map((s) => s.trim()).filter(Boolean);
+    else if (g === "saude" && fd.get(n) === "") v = 0;
     else if (tipo === "number" || tipo === "select-one") v = parseFloat(String(fd.get(n)).replace(",", "."));
     else v = fd.get(n);
     if (typeof v === "number" && isNaN(v)) continue;
