@@ -206,3 +206,58 @@ details.aj .h-ico { width: 36px; height: 36px; font-size: 18px; border-radius: 1
 .lista-peso li span { flex: 1; }
 .mt { margin-top: 12px; }
 .centro { text-align: center; }
+
+/* ---------- hábitos personalizados ---------- */
+.item-hab { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.item-hab .h-ico { width: 40px; height: 40px; font-size: 20px; }
+.item-hab .h-nome b { font-size: 16px; }
+.grade-icones { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.grade-icones input, .grade-cores input, .seg-form input { display: none; }
+.grade-icones span { display: grid; place-items: center; aspect-ratio: 1; border-radius: 12px; background: var(--card2); font-size: 22px; }
+.grade-icones input:checked + span { background: color-mix(in srgb, var(--c) 30%, var(--card2)); outline: 2px solid var(--c); }
+.grade-cores { display: flex; gap: 8px; flex-wrap: wrap; }
+.grade-cores span { display: block; width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--bg); }
+.grade-cores input:checked + span { outline: 3px solid var(--txt); }
+.seg-form { margin-bottom: 14px; }
+.seg-form label { flex: 1; }
+.seg-form span { display: grid; place-items: center; height: 42px; border-radius: 10px; font-weight: 700; font-size: 13px; color: var(--mut); text-align: center; padding: 0 4px; }
+.seg-form input:checked + span { background: var(--card2); color: var(--txt); }
+.form-hab:has(input[name=tipo][value=check]:checked) .so-qtd { display: none; }
+
+/* ---------- livros ---------- */
+.capa { display: block; object-fit: cover; border-radius: 6px 10px 10px 6px; box-shadow: 0 6px 16px rgba(0,0,0,.45), inset 4px 0 0 rgba(0,0,0,.18); background: var(--card2); flex: none; }
+.capa.p { width: 46px; height: 68px; border-radius: 4px 7px 7px 4px; }
+.capa.m { width: 100%; aspect-ratio: 2 / 3; height: auto; }
+.capa.g { width: 104px; height: 156px; }
+.capa.sem { display: flex; align-items: center; justify-content: center; padding: 8px; overflow: hidden; }
+.capa.sem span { color: #fff; font-weight: 800; text-align: center; line-height: 1.15; font-size: 13px; text-shadow: 0 1px 4px rgba(0,0,0,.4); display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.capa.p.sem span { font-size: 7px; -webkit-line-clamp: 4; }
+.capa.g.sem span { font-size: 14px; }
+.capa.sem span { overflow-wrap: anywhere; hyphens: auto; }
+.livro-mini { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; margin-top: 14px; padding: 10px; border-radius: 16px; background: var(--card2); }
+.livro-mini.vazio { justify-content: center; color: var(--mut); font-weight: 700; height: 52px; }
+.livro-mini .li { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.livro-mini .li b { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.livro-mini .li > span:not(.barra) { font-size: 13px; color: var(--mut); }
+.barra.fina { height: 5px; margin-top: 3px; }
+.pct-livro { font-weight: 800; color: var(--leitura); font-size: 17px; }
+.livro-grande { display: flex; gap: 16px; align-items: flex-start; }
+.livro-grande .li { flex: 1; min-width: 0; }
+.livro-grande .tit { display: block; font-size: 18px; line-height: 1.2; margin-bottom: 2px; }
+.livro-grande .acoes .b { font-size: 14px; }
+.fila-livros { display: flex; gap: 12px; overflow-x: auto; padding: 2px 4px 10px; scrollbar-width: none; }
+.fila-livros::-webkit-scrollbar { display: none; }
+.fila-livros button { flex: 0 0 84px; }
+.prateleira { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding: 0 14px 14px; margin-bottom: 26px; position: relative; align-items: end; }
+.prateleira::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 14px; border-radius: 4px; background: linear-gradient(180deg, #8a5a33 0%, #6b4223 55%, #4a2c16 100%); box-shadow: 0 8px 14px rgba(0,0,0,.5); }
+.prateleira button { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 8px; }
+.prateleira small { font-size: 10px; color: var(--mut); position: absolute; bottom: -24px; }
+.livro-form-topo { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; }
+.capa-botoes { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.capa-botoes .b { flex: none; width: 100%; font-size: 14px; }
+.capa-resultados:empty { display: none; }
+.capa-resultados { margin-bottom: 14px; }
+.grade-capas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.grade-capas button { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.grade-capas img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 6px; background: var(--card2); }
+.grade-capas small { font-size: 11px; color: var(--mut); }

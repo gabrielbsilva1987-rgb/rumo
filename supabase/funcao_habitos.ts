@@ -29,6 +29,7 @@ const PADRAO: any = {
   peso: { inicial: 139, meta: 99, dia: 0, hora: "08:00" },
   revisao: { dia: 0, hora: "17:00" },
   fechamento: "21:30",
+  extras: [],
 };
 function mesclar(d: any) {
   const c: any = { ...PADRAO, ...(d || {}) };
@@ -123,7 +124,13 @@ Deno.serve(async (req) => {
     // ---------- Leitura ----------
     if (c.leitura.ativo && na(c.leitura.dias, sem) && !feito("leitura")) {
       const t = hm(c.leitura.hora), falta = Math.max(0, c.leitura.meta - valor("leitura"));
-      await lembrar("leitura", t, "📖 Hora da leitura", `Suas ${c.leitura.meta} páginas de hoje. Livro na mão antes do celular.`);
+      let livroTxt = "Livro na mão antes do celular.";
+      if (min >= t && min < t + 120) {
+        const { data: lendo } = await sb.from("h_livros").select("id,titulo,paginas,pagina_atual").eq("user_id", uid).eq("status", "lendo").order("criado_em");
+        const l = (lendo || []).find((x) => x.id === c.leitura.livro_atual) || (lendo || []).slice(-1)[0];
+        if (l) livroTxt = `"${l.titulo}": você está na p. ${l.pagina_atual}${l.paginas ? ` de ${l.paginas} (${Math.round((l.pagina_atual / l.paginas) * 100)}%)` : ""}.`;
+      }
+      await lembrar("leitura", t, "📖 Hora da leitura", `Suas ${c.leitura.meta} páginas de hoje. ${livroTxt}`);
       await lembrar("leitura", t + (+c.leitura.reforco_min || 90), "📖 Ainda dá tempo de ler", `Faltam ${falta} páginas para a meta de hoje.`, "-reforco");
     }
 
@@ -140,6 +147,16 @@ Deno.serve(async (req) => {
       const t = hm(c.estudo.hora);
       await lembrar("estudo", t, "🎓 Hora de estudar", `${c.estudo.meta} min do seu curso. Abra a próxima aula e comece.`);
       await lembrar("estudo", t + (+c.estudo.reforco_min || 60), "🎓 Ainda dá para estudar hoje", `Faltam ${Math.max(0, c.estudo.meta - valor("estudo"))} min para a meta.`, "-reforco");
+    }
+
+    // ---------- Hábitos criados por você ----------
+    const extras = (c.extras || []).filter((x: any) => x.ativo !== false && (!x.criado || x.criado <= dia));
+    for (const x of extras) {
+      if (!x.hora || !na(x.dias, sem) || feito(x.id)) continue;
+      const t = hm(x.hora), nome = `${x.emoji || "⭐"} ${x.nome}`;
+      const corpo = x.tipo === "check" ? "Depois marque no app." : `Meta de hoje: ${x.meta} ${x.unidade || ""}. Depois registre no app.`;
+      await lembrar(x.id, t, nome, corpo);
+      await lembrar(x.id, t + 60, `${nome}: ainda dá tempo`, x.tipo === "check" ? "Ainda não marcado hoje." : `Você está em ${valor(x.id)} de ${x.meta} ${x.unidade || ""}.`, "-reforco");
     }
 
     // ---------- Água: só lembra se estiver abaixo do ritmo ----------
@@ -163,6 +180,7 @@ Deno.serve(async (req) => {
       if (c.leitura.ativo && na(c.leitura.dias, sem) && !feito("leitura")) falta.push("leitura");
       if (c.exercicio.ativo && na(c.exercicio.dias, sem) && !feito("exercicio")) falta.push("treino");
       if (c.estudo.ativo && na(c.estudo.dias, sem) && !feito("estudo")) falta.push("estudo");
+      for (const x of extras) if (na(x.dias, sem) && !feito(x.id)) falta.push(x.nome.toLowerCase());
       if (c.agua.ativo && !feito("agua")) falta.push(`água (${litros(valor("agua"))} de ${litros(c.agua.meta)})`);
       if (falta.length && await primeiraVez(uid, dia, "fechamento")) {
         await enviar(subs, "✅ Fechamento do dia", `Falta: ${falta.join(", ")}. Se já fez, marque no app.`, "fechamento");
@@ -196,8 +214,9 @@ Deno.serve(async (req) => {
           let esperados = 0, feitos = 0;
           for (let d = de; d <= dia; d = addDias(d, 1)) {
             const s = new Date(d + "T12:00:00Z").getUTCDay();
-            for (const h of ["leitura", "estudo", "exercicio", "agua", "sono"]) {
-              if (!c[h].ativo || !na(c[h].dias, s)) continue;
+            for (const h of ["leitura", "estudo", "exercicio", "agua", "sono", ...extras.map((x: any) => x.id)]) {
+              const hab = c[h] || extras.find((x: any) => x.id === h);
+              if (hab.ativo === false || (h in PADRAO && !hab.ativo) || !na(hab.dias, s) || (hab.criado && d < hab.criado)) continue;
               esperados++;
               if ((rs || []).some((r) => r.data === d && r.habito === h && r.feito)) feitos++;
             }

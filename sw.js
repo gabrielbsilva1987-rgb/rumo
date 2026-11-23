@@ -1,5 +1,5 @@
 // Service worker do Rumo: notificações com o app fechado + funcionamento offline básico
-const CACHE = "rumo-v1";
+const CACHE = "rumo-v2";
 const ARQUIVOS = ["./", "./index.html", "./app.js", "./styles.css", "./config.js", "./manifest.json", "./icon-192.png"];
 
 self.addEventListener("install", (e) => {

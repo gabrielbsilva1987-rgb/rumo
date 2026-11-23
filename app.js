@@ -2,14 +2,21 @@ import { CONFIG } from "./config.js";
 
 /* ============================ Constantes ============================ */
 const TZ = "America/Sao_Paulo";
-const H = {
-  sono: { nome: "Sono", emoji: "🌙" },
-  leitura: { nome: "Leitura", emoji: "📖" },
-  agua: { nome: "Água", emoji: "💧" },
-  exercicio: { nome: "Treino", emoji: "🏋️" },
-  estudo: { nome: "Estudo", emoji: "🎓" },
+const H_BASE = {
+  sono: { nome: "Sono", emoji: "🌙", cor: "var(--sono)" },
+  leitura: { nome: "Leitura", emoji: "📖", cor: "var(--leitura)" },
+  agua: { nome: "Água", emoji: "💧", cor: "var(--agua)" },
+  exercicio: { nome: "Treino", emoji: "🏋️", cor: "var(--exercicio)" },
+  estudo: { nome: "Estudo", emoji: "🎓", cor: "var(--estudo)" },
 };
-const ORDEM = Object.keys(H);
+const BASE = Object.keys(H_BASE);
+// Hábitos criados por você ficam em S.cfg.extras
+const info = (h) => H_BASE[h] || (S.cfg.extras || []).find((x) => x.id === h) || { nome: "Hábito", emoji: "⭐", cor: "var(--acc)" };
+const hc = (h, c = S.cfg) => c[h] || (c.extras || []).find((x) => x.id === h) || {};
+const lista = () => [...BASE, ...(S.cfg.extras || []).filter((x) => x.ativo !== false)
+  .sort((a, b) => (a.hora || "99").localeCompare(b.hora || "99")).map((x) => x.id)];
+const ICONES = ["🧘","🙏","🏃","🚶","🚴","🏊","🤸","⚽","🥗","🍎","🥦","🍳","🥩","☕","🚭","🍬","💊","🦷","🧴","🛁","😴","📵","💻","✍️","📝","📓","🎧","🎸","🎹","🎨","🧠","🗣️","🌎","💰","💵","📊","🧹","🧺","🌱","🌞","🙌","❤️","👨‍👩‍👧","📞","🐶","🎯","✅","⭐"];
+const CORES = ["#c8f560","#ffb547","#4cc3ff","#ff7a59","#c08cff","#8f9bff","#ff6fae","#3ddbb0","#ffe14d"];
 const SEM_LETRA = ["D", "S", "T", "Q", "Q", "S", "S"];
 const SEM_NOME = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 const SEG_A_DOM = [1, 2, 3, 4, 5, 6, 0];
@@ -26,6 +33,7 @@ const CFG_PADRAO = {
   peso: { inicial: 139, meta: 99, dia: 0, hora: "08:00" },
   revisao: { dia: 0, hora: "17:00" },
   fechamento: "21:30",
+  extras: [],
 };
 function mesclarCfg(d) {
   const c = { ...CFG_PADRAO, ...(d || {}) };
@@ -99,6 +107,18 @@ function apiSupabase(sb, uid) {
     async apagarPeso(id) { ok(await sb.from("h_peso").delete().eq("id", id)); },
     async revs() { return ok(await sb.from("h_revisoes").select("semana,dados").order("semana", { ascending: false })); },
     async salvarRev(semana, dados) { ok(await sb.from("h_revisoes").upsert({ user_id: uid, semana, dados })); },
+    async livros() { return ok(await sb.from("h_livros").select("*").order("criado_em")); },
+    async salvarLivro(l) {
+      const { id, criado_em, user_id, ...r } = l;
+      if (id) return ok(await sb.from("h_livros").update(r).eq("id", id).select().single());
+      return ok(await sb.from("h_livros").insert(r).select().single());
+    },
+    async apagarLivro(id) { ok(await sb.from("h_livros").delete().eq("id", id)); },
+    async subirCapa(blob) {
+      const path = `${uid}/${Date.now()}.jpg`;
+      ok(await sb.storage.from("capas").upload(path, blob, { contentType: "image/jpeg", upsert: true }));
+      return sb.storage.from("capas").getPublicUrl(path).data.publicUrl;
+    },
     async salvarSub(sub) {
       const j = sub.toJSON();
       ok(await sb.from("h_push").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, user_id: uid }, { onConflict: "endpoint" }));
@@ -122,6 +142,15 @@ function apiLocal() {
     async apagarPeso(id) { G("pesos", L("pesos", []).filter((p) => p.id !== id)); },
     async revs() { return L("revs", []).sort((a, b) => b.semana.localeCompare(a.semana)); },
     async salvarRev(semana, dados) { const a = L("revs", []).filter((r) => r.semana !== semana); a.push({ semana, dados }); G("revs", a); },
+    async livros() { return L("livros", []); },
+    async salvarLivro(l) {
+      const a = L("livros", []);
+      const novo = l.id ? { ...a.find((x) => x.id === l.id), ...l } : { ...l, id: Date.now(), criado_em: new Date().toISOString() };
+      G("livros", [...a.filter((x) => x.id !== novo.id), novo].sort((x, y) => x.criado_em.localeCompare(y.criado_em)));
+      return novo;
+    },
+    async apagarLivro(id) { G("livros", L("livros", []).filter((x) => x.id !== id)); },
+    async subirCapa(blob) { return await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); },
     async salvarSub() { throw new Error("No modo demonstração não há notificações."); },
     async teste() { throw new Error("No modo demonstração não há notificações."); },
   };
@@ -148,17 +177,29 @@ function semearDemo(G) {
   regs.push({ data: hj, habito: "agua", valor: 1500, detalhe: {}, feito: false });
   const ultDom = addDias(domingoDe(hj), -7);
   const revs = [{ semana: ultDom, dados: { nota: 4, pct: 81, funcionou: "Ler logo depois do café.", atrapalhou: "Dormi tarde na quinta.", foco: "Deitar até 23h todos os dias" } }];
+  const t0 = new Date(Date.now() - 864e5 * 60).toISOString();
+  G("livros", [
+    { id: 1, titulo: "Hábitos Atômicos", autor: "James Clear", paginas: 320, pagina_atual: 320, status: "lido", inicio: addDias(hj, -45), fim: addDias(hj, -30), capa: null, criado_em: t0 },
+    { id: 2, titulo: "O Poder do Hábito", autor: "Charles Duhigg", paginas: 408, pagina_atual: 408, status: "lido", inicio: addDias(hj, -29), fim: addDias(hj, -12), capa: null, criado_em: t0 },
+    { id: 3, titulo: "Mindset", autor: "Carol Dweck", paginas: 312, pagina_atual: 312, status: "lido", inicio: addDias(hj, -40), fim: addDias(hj, -20), capa: null, criado_em: t0 },
+    { id: 4, titulo: "Essencialismo", autor: "Greg McKeown", paginas: 272, pagina_atual: 118, status: "lendo", inicio: addDias(hj, -11), fim: null, capa: null, criado_em: new Date().toISOString() },
+    { id: 5, titulo: "Sapiens", autor: "Yuval Noah Harari", paginas: 464, pagina_atual: 0, status: "quero", inicio: null, fim: null, capa: null, criado_em: new Date().toISOString() },
+  ]);
   G("cfg", {}); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
 }
 
 /* ============================ Regras dos hábitos ============================ */
 function calcFeito(h, valor, c = S.cfg) {
   if (h === "exercicio") return valor > 0;
-  return valor >= (c[h]?.meta ?? Infinity);
+  const x = hc(h, c);
+  if (x.tipo === "check") return valor > 0;
+  return valor >= (x.meta ?? Infinity);
 }
 function programado(h, d, c = S.cfg) {
-  if (!c[h]?.ativo) return false;
-  const dias = c[h].dias;
+  const x = hc(h, c);
+  if (!x.ativo && !(x.id && x.ativo !== false)) return false;
+  if (x.criado && d < x.criado) return false; // hábito novo só conta a partir do dia em que foi criado
+  const dias = x.dias;
   return !Array.isArray(dias) || dias.includes(semDe(d));
 }
 const reg = (d, h) => S.regs.get(`${d}|${h}`);
@@ -166,7 +207,7 @@ const feito = (d, h) => !!reg(d, h)?.feito;
 
 function placarDia(d) {
   let prog = 0, ok = 0;
-  for (const h of ORDEM) {
+  for (const h of lista()) {
     if (!programado(h, d)) continue;
     prog++;
     if (feito(d, h)) ok++;
@@ -222,12 +263,13 @@ function tendenciaPeso() {
 
 /* ============================ Estado ============================ */
 const S = {
-  sb: null, api: null, cfg: mesclarCfg({}), regs: new Map(), pesos: [], revs: [],
+  sb: null, api: null, cfg: mesclarCfg({}), regs: new Map(), pesos: [], revs: [], livros: [],
   aba: "hoje", dia: hoje(), periodo: 30, semana: domingoDe(hoje()), inicioDados: addDias(hoje(), -400), pronto: false,
 };
 
 async function carregar() {
-  const [cfg, regs, pesos, revs] = await Promise.all([S.api.cfg(), S.api.regs(S.inicioDados), S.api.pesos(), S.api.revs()]);
+  const [cfg, regs, pesos, revs, livros] = await Promise.all([S.api.cfg(), S.api.regs(S.inicioDados), S.api.pesos(), S.api.revs(), S.api.livros().catch(() => [])]);
+  S.livros = livros;
   S.cfg = cfg;
   S.regs = new Map(regs.map((r) => [`${r.data}|${r.habito}`, { ...r, valor: +r.valor }]));
   S.pesos = pesos.map((p) => ({ ...p, kg: +p.kg }));
@@ -237,12 +279,14 @@ async function carregar() {
 
 async function salvarReg(h, d, valor, detalhe = {}) {
   valor = Math.max(0, Math.round(valor * 100) / 100);
+  const terminou = h === "leitura" ? avancarLivro(valor - (reg(d, h)?.valor || 0)) : null;
+  if (terminou) setTimeout(() => toast(`🎉 Você terminou "${terminou.titulo}"!`), 50);
   if (!valor && h !== "exercicio") return apagarReg(h, d);
   const r = { data: d, habito: h, valor, detalhe, feito: calcFeito(h, valor) };
   const antes = reg(d, h);
   S.regs.set(`${d}|${h}`, r);
   render();
-  if (r.feito && !antes?.feito) celebrar(h, d);
+  if (r.feito && !antes?.feito && !terminou) celebrar(h, d);
   try { await S.api.salvarReg(r); } catch (e) { erro(e); }
 }
 async function apagarReg(h, d) {
@@ -250,11 +294,74 @@ async function apagarReg(h, d) {
   render();
   try { await S.api.apagarReg(d, h); } catch (e) { erro(e); }
 }
+/* ---------- Livros ---------- */
+function livroAtual() {
+  const lendo = S.livros.filter((l) => l.status === "lendo");
+  return lendo.find((l) => l.id === S.cfg.leitura.livro_atual) || lendo[lendo.length - 1] || null;
+}
+// Soma (ou tira) páginas do livro atual. Devolve o livro se ele acabou agora.
+function avancarLivro(delta) {
+  const l = livroAtual();
+  if (!l || !delta) return null;
+  const nova = Math.max(0, Math.min(l.paginas || Infinity, l.pagina_atual + delta));
+  const acabou = l.paginas > 0 && nova >= l.paginas;
+  Object.assign(l, { pagina_atual: nova }, acabou ? { status: "lido", fim: hoje() } : {});
+  S.api.salvarLivro({ ...l }).catch(erro);
+  return acabou ? l : null;
+}
+const pctLivro = (l) => (l.paginas ? Math.min(100, Math.round((l.pagina_atual / l.paginas) * 100)) : 0);
+function corLivro(t) { let x = 0; for (const ch of String(t)) x = (x * 31 + ch.charCodeAt(0)) % 360; return `linear-gradient(160deg, hsl(${x} 45% 38%), hsl(${(x + 40) % 360} 50% 22%))`; }
+function capa(l, tam = "p") {
+  if (l?.capa) return `<img class="capa ${tam}" src="${esc(l.capa)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+  return `<div class="capa ${tam} sem" style="background:${corLivro(l?.titulo || "")}"><span>${esc(l?.titulo || "📚")}</span></div>`;
+}
+function ritmoLeitura() {
+  let soma = 0;
+  for (let i = 1; i <= 14; i++) soma += reg(addDias(hoje(), -i), "leitura")?.valor || 0;
+  return soma / 14;
+}
+function reduzirImagem(file, max = 700) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, max / Math.max(im.width, im.height));
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(im.width * k); cv.height = Math.round(im.height * k);
+      cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      cv.toBlob((b) => (b ? res(b) : rej(new Error("Não consegui ler a imagem"))), "image/jpeg", 0.85);
+    };
+    im.onerror = () => rej(new Error("Não consegui abrir a imagem"));
+    im.src = url;
+  });
+}
+async function buscarCapas(titulo, autor) {
+  const q = `intitle:${titulo}${autor ? ` inauthor:${autor}` : ""}`;
+  const out = [];
+  try {
+    const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12&printType=books`);
+    const j = await r.json();
+    for (const it of j.items || []) {
+      const v = it.volumeInfo || {}, img = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail;
+      if (!img) continue;
+      out.push({ capa: img.replace(/^http:/, "https:").replace("&edge=curl", ""), titulo: v.title, autor: (v.authors || []).join(", "), paginas: v.pageCount || 0 });
+    }
+  } catch {}
+  if (out.length < 3) {
+    try {
+      const r = await fetch(`https://openlibrary.org/search.json?title=${encodeURIComponent(titulo)}${autor ? `&author=${encodeURIComponent(autor)}` : ""}&limit=8&fields=title,author_name,cover_i,number_of_pages_median`);
+      const j = await r.json();
+      for (const d of j.docs || []) if (d.cover_i) out.push({ capa: `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg`, titulo: d.title, autor: (d.author_name || []).join(", "), paginas: d.number_of_pages_median || 0 });
+    } catch {}
+  }
+  return out.slice(0, 9);
+}
+
 function celebrar(h, d) {
   const p = placarDia(d);
   if (p.ok === p.prog && p.prog) return toast("🏆 Todos os hábitos do dia!");
   const msgs = { sono: "🌙 Noite bem dormida!", leitura: "📖 Leitura do dia feita!", agua: "💧 Meta de água batida!", exercicio: "🏋️ Treino feito!", estudo: "🎓 Estudo do dia feito!" };
-  toast(msgs[h]);
+  toast(msgs[h] || `${info(h).emoji} ${info(h).nome}: feito!`);
 }
 function erro(e) { console.error(e); toast("⚠️ " + (e?.message || "Erro ao salvar. Verifique a internet.")); }
 
@@ -268,13 +375,13 @@ function anel(pct, tam = 108, esp = 11) {
 }
 const barra = (f) => `<div class="barra"><i style="width:${Math.min(100, Math.max(0, f * 100))}%"></i></div>`;
 function topoHabito(h, sub, ok) {
-  return `<div class="h-topo"><div class="h-ico">${H[h].emoji}</div><div class="h-nome"><b>${H[h].nome}</b><span>${sub}</span></div><div class="h-check">${ok ? "✓" : ""}</div></div>`;
+  return `<div class="h-topo"><div class="h-ico">${info(h).emoji}</div><div class="h-nome"><b>${esc(info(h).nome)}</b><span>${sub}</span></div><div class="h-check">${ok ? "✓" : ""}</div></div>`;
 }
-const corH = (h) => `--c:var(--${h})`;
+const corH = (h) => `--c:${info(h).cor}`;
 
 function cartaoHabito(h, d) {
   const c = S.cfg, r = reg(d, h), prog = programado(h, d), ok = !!r?.feito, v = r?.valor || 0;
-  if (!c[h].ativo) return "";
+  if (hc(h).ativo === false || (BASE.includes(h) && !c[h].ativo)) return "";
   const cls = `habito ${ok ? "ok" : ""} ${!prog && !r ? "folga" : ""}`;
   const seq = sequencia(h);
   const seqTxt = seq >= 2 ? ` · 🔥 ${seq}` : "";
@@ -298,7 +405,15 @@ function cartaoHabito(h, d) {
     const un = h === "leitura" ? "páginas" : "min";
     const passos = h === "leitura" ? [5, 10] : [15, 30];
     sub = `${prog ? `${fmtHora(c[h].hora)} · ` : "Folga hoje · "}meta ${c[h].meta} ${un}${seqTxt}`;
-    corpo = `<div class="h-valor"><b>${num(v, 0)}</b><span>/ ${c[h].meta} ${un}</span></div>${barra(v / c[h].meta)}
+    let livro = "";
+    if (h === "leitura") {
+      const l = livroAtual();
+      livro = l ? `<button class="livro-mini" data-a="aba" data-v="estante">${capa(l, "p")}<span class="li"><b>${esc(l.titulo)}</b>
+          <span>p. ${l.pagina_atual}${l.paginas ? ` de ${l.paginas}` : ""}</span>${l.paginas ? `<span class="barra fina"><i style="width:${pctLivro(l)}%"></i></span>` : ""}</span>
+          ${l.paginas ? `<span class="pct-livro">${pctLivro(l)}%</span>` : ""}</button>`
+        : `<button class="livro-mini vazio" data-a="novoLivro">📚 Adicionar o livro que você está lendo</button>`;
+    }
+    corpo = `${livro}<div class="h-valor"><b>${num(v, 0)}</b><span>/ ${c[h].meta} ${un}</span></div>${barra(v / c[h].meta)}
       <div class="acoes">${passos.map((p) => `<button class="b" data-a="somar" data-h="${h}" data-d="${d}" data-v="${p}">+${p}</button>`).join("")}
       ${!ok ? `<button class="b cor" data-a="meta" data-h="${h}" data-d="${d}">✓ ${c[h].meta}</button>` : ""}
       <button class="b min" data-a="editarNum" data-h="${h}" data-d="${d}" aria-label="Editar">✏️</button></div>`;
@@ -317,6 +432,21 @@ function cartaoHabito(h, d) {
     const feitos = r?.detalhe?.tipos || [];
     sub = `${prog ? fmtHora(c.exercicio.hora) : "Dia livre (bônus se treinar)"}${seqTxt}`;
     corpo = `<div class="acoes">${tipos.map((t) => `<button class="b ${feitos.includes(t) ? "on" : ""}" data-a="treino" data-d="${d}" data-t="${esc(t)}">${feitos.includes(t) ? "✓ " : ""}${esc(t)}</button>`).join("")}</div>`;
+  }
+
+  if (!H_BASE[h]) {
+    const x = hc(h), un = esc(x.unidade || "");
+    sub = `${prog ? (x.hora ? fmtHora(x.hora) : "Hoje") : "Folga hoje"}${x.tipo !== "check" ? ` · meta ${num(x.meta)} ${un}` : ""}${seqTxt}`;
+    if (x.tipo === "check") {
+      corpo = `<div class="acoes"><button class="b ${ok ? "on" : ""}" data-a="check" data-h="${h}" data-d="${d}">${ok ? "✓ Feito" : "Marcar como feito"}</button></div>`;
+    } else {
+      const passo = +x.passo || 1;
+      corpo = `<div class="h-valor"><b>${num(v)}</b><span>/ ${num(x.meta)} ${un}</span></div>${barra(v / x.meta)}
+        <div class="acoes"><button class="b" data-a="somar" data-h="${h}" data-d="${d}" data-v="${passo}">+${num(passo)}</button>
+        ${!ok ? `<button class="b cor" data-a="meta" data-h="${h}" data-d="${d}">✓ ${num(x.meta)}</button>` : ""}
+        <button class="b min" data-a="somar" data-h="${h}" data-d="${d}" data-v="${-passo}" aria-label="Desfazer">↶</button>
+        <button class="b min" data-a="editarNum" data-h="${h}" data-d="${d}" aria-label="Editar">✏️</button></div>`;
+    }
   }
 
   return `<section class="${cls}" style="${corH(h)}">${topoHabito(h, sub, ok)}${corpo}</section>`;
@@ -366,7 +496,7 @@ function telaHoje() {
     <div class="chips-linha">${seq ? `<span class="pilula acc">🔥 ${seq} ${seq === 1 ? "dia" : "dias"} no ritmo</span>` : ""}${perdeu > 0 ? `<span class="pilula">−${num(perdeu)} kg</span>` : ""}</div></div></section>`;
   if (rev) h += `<div class="foco"><span>🎯</span><div><b>Foco da semana</b>${esc(rev.dados.foco)}</div></div>`;
   h += cartaoPeso(d);
-  for (const k of ORDEM) h += cartaoHabito(k, d);
+  for (const k of lista()) h += cartaoHabito(k, d);
   return h;
 }
 
@@ -394,18 +524,20 @@ function graficoPeso(ps, c) {
 function graficoBarras(h, de, ate) {
   const c = S.cfg, dias = [];
   for (let d = de; d <= ate; d = addDias(d, 1)) dias.push(d);
-  const meta = h === "exercicio" ? 1 : c[h].meta;
-  const vals = dias.map((d) => (h === "exercicio" ? (reg(d, h)?.valor ? 1 : 0) : reg(d, h)?.valor || 0));
+  const binario = h === "exercicio" || hc(h).tipo === "check";
+  const meta = binario ? 1 : hc(h).meta;
+  const vals = dias.map((d) => (binario ? (reg(d, h)?.valor ? 1 : 0) : reg(d, h)?.valor || 0));
+  const cor0 = info(h).cor;
   const max = Math.max(meta * 1.3, ...vals);
   const W = 320, Hh = 56, gap = dias.length > 40 ? 1 : 2, bw = (W - gap * (dias.length - 1)) / dias.length;
   const yMeta = Hh - (meta / max) * Hh;
   return `<svg class="grafico" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none" style="height:56px">
     ${dias.map((d, i) => {
       const v = vals[i], hh = Math.max(v ? 3 : 2, (v / max) * Hh), ok = feito(d, h), prog = programado(h, d);
-      const cor = ok ? `var(--${h})` : v ? `color-mix(in srgb, var(--${h}) 40%, var(--card2))` : prog ? "rgba(255,95,109,.35)" : "var(--card2)";
+      const cor = ok ? cor0 : v ? `color-mix(in srgb, ${cor0} 40%, var(--card2))` : prog ? "rgba(255,95,109,.35)" : "var(--card2)";
       return `<rect x="${(i * (bw + gap)).toFixed(2)}" y="${(Hh - hh).toFixed(2)}" width="${bw.toFixed(2)}" height="${hh.toFixed(2)}" rx="${Math.min(3, bw / 2)}" fill="${cor}"/>`;
     }).join("")}
-    ${h !== "exercicio" ? `<line x1="0" x2="${W}" y1="${yMeta}" y2="${yMeta}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
+    ${!binario ? `<line x1="0" x2="${W}" y1="${yMeta}" y2="${yMeta}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
   </svg>`;
 }
 
@@ -455,8 +587,8 @@ function telaProgresso() {
 
   // Por hábito
   h += `<div class="titulo-sec">Hábito por hábito</div>`;
-  for (const k of ORDEM) {
-    if (!c[k].ativo) continue;
+  for (const k of lista()) {
+    if (BASE.includes(k) && !c[k].ativo) continue;
     let prog = 0, ok = 0, soma = 0, nReg = 0;
     for (let d = de; d <= ate; d = addDias(d, 1)) {
       const r = reg(d, k);
@@ -474,12 +606,90 @@ function telaProgresso() {
       for (let d = de; d <= ate; d = addDias(d, 1)) if (!programado(k, d) && feito(d, k)) bonus++;
       extra = `<div class="mini"><b>${ok + bonus}</b><span>treinos${bonus ? ` (${bonus} extra)` : ""}</span></div><div class="mini"><b>${num((ok + bonus) / (S.periodo / 7), 1)}</b><span>treinos por semana</span></div>`;
     }
+    if (!H_BASE[k]) {
+      const x = hc(k);
+      extra = `<div class="mini"><b>${ok}</b><span>dias cumpridos</span></div>` +
+        (x.tipo === "check" ? `<div class="mini"><b>${prog - ok}</b><span>dias sem fazer</span></div>` : `<div class="mini"><b>${num(soma)} ${esc(x.unidade || "")}</b><span>no total</span></div>`);
+    }
     h += `<section class="cartao hab-stat" style="${corH(k)}">
-      <div class="h-topo"><div class="h-ico">${H[k].emoji}</div><div class="h-nome"><b>${H[k].nome}</b><span>🔥 ${sequencia(k)} atual · melhor ${melhorSequencia(k, de, ate)}</span></div><div class="pct">${pct}%</div></div>
+      <div class="h-topo"><div class="h-ico">${info(k).emoji}</div><div class="h-nome"><b>${esc(info(k).nome)}</b><span>🔥 ${sequencia(k)} atual · melhor ${melhorSequencia(k, de, ate)}</span></div><div class="pct">${pct}%</div></div>
       ${graficoBarras(k, de, ate)}
       <div class="grid2">${extra}</div></section>`;
   }
   return h;
+}
+
+function telaEstante() {
+  const lendo = S.livros.filter((l) => l.status === "lendo");
+  const quero = S.livros.filter((l) => l.status === "quero");
+  const lidos = S.livros.filter((l) => l.status === "lido").sort((a, b) => (b.fim || "").localeCompare(a.fim || ""));
+  const ano = hoje().slice(0, 4), atual = livroAtual();
+  let pagsAno = 0;
+  for (const [k, r] of S.regs) if (k.startsWith(ano) && r.habito === "leitura") pagsAno += r.valor;
+  const lidosAno = lidos.filter((l) => (l.fim || "").startsWith(ano)).length;
+  const ritmo = ritmoLeitura();
+
+  let h = `<header class="topo"><div><h1>Estante</h1><div class="sub">${lidosAno} ${lidosAno === 1 ? "livro lido" : "livros lidos"} em ${ano} · ${num(pagsAno, 0)} páginas</div></div>
+    <button class="icone-btn" data-a="novoLivro" aria-label="Adicionar livro" style="background:var(--acc);color:var(--acc-txt);font-weight:900">+</button></header>`;
+
+  h += `<div class="titulo-sec" style="margin-top:4px">Lendo agora</div>`;
+  if (!lendo.length) h += `<section class="cartao centro"><p style="margin:4px 0 12px">Nenhum livro em leitura.</p><button class="b prim largo" data-a="novoLivro">📚 Adicionar livro</button></section>`;
+  for (const l of lendo) {
+    const falta = Math.max(0, (l.paginas || 0) - l.pagina_atual);
+    const dias = ritmo > 0 && falta ? Math.ceil(falta / ritmo) : null;
+    h += `<section class="cartao livro-grande" style="--c:var(--leitura)">${capa(l, "g")}<div class="li">
+      ${lendo.length > 1 && l === atual ? `<span class="pilula acc" style="margin-bottom:6px">📖 Livro do dia</span>` : ""}
+      <b class="tit">${esc(l.titulo)}</b>${l.autor ? `<span class="sub">${esc(l.autor)}</span>` : ""}
+      <div class="h-valor" style="margin:10px 0 6px"><b>${l.paginas ? pctLivro(l) + "%" : "p. " + l.pagina_atual}</b><span>${l.paginas ? `p. ${l.pagina_atual} de ${l.paginas}` : ""}</span></div>
+      ${l.paginas ? barra(l.pagina_atual / l.paginas) : ""}
+      ${l.paginas ? `<p class="sub" style="margin:8px 0 0">Faltam ${falta} páginas${dias ? ` · uns ${dias} ${dias === 1 ? "dia" : "dias"} no seu ritmo` : ""}</p>` : ""}
+      <div class="acoes"><button class="b" data-a="paginaLivro" data-id="${l.id}">📍 Estou na página…</button><button class="b min" data-a="editarLivro" data-id="${l.id}" aria-label="Editar">✏️</button></div>
+      ${lendo.length > 1 && l !== atual ? `<button class="b largo mt" style="height:40px;font-size:14px" data-a="lerEste" data-id="${l.id}">Contar as páginas do dia neste livro</button>` : ""}
+    </div></section>`;
+  }
+
+  if (quero.length) {
+    h += `<div class="titulo-sec">Quero ler</div><div class="fila-livros">${quero.map((l) => `<button data-a="editarLivro" data-id="${l.id}">${capa(l, "m")}</button>`).join("")}</div>`;
+  }
+
+  h += `<div class="titulo-sec">Lidos · ${lidos.length}</div>`;
+  if (!lidos.length) h += `<p class="sub" style="margin:0 4px">Os livros que você terminar aparecem aqui, na sua estante.</p>`;
+  for (let i = 0; i < lidos.length; i += 3) {
+    h += `<div class="prateleira">${lidos.slice(i, i + 3).map((l) => `<button data-a="editarLivro" data-id="${l.id}">${capa(l, "m")}<small>${l.fim ? dm(l.fim) + "/" + l.fim.slice(2, 4) : ""}</small></button>`).join("")}</div>`;
+  }
+  return h;
+}
+
+function modalLivro(l) {
+  const novo = !l;
+  l = l || { titulo: "", autor: "", paginas: "", pagina_atual: 0, capa: "", status: "lendo" };
+  abrirModal(`<h3>${novo ? "📚 Novo livro" : "Editar livro"}</h3>
+  <form data-form="livro" data-id="${l.id || ""}">
+    <div class="livro-form-topo"><div id="capaPrev">${capa(l, "g")}</div>
+      <div class="capa-botoes"><button type="button" class="b" data-a="buscarCapa">🔎 Buscar capa</button>
+      <label class="b">📷 Foto da capa<input type="file" accept="image/*" hidden data-capa-arquivo></label>
+      ${l.capa ? `<button type="button" class="b" data-a="tirarCapa">Remover capa</button>` : ""}</div></div>
+    <div id="capaResultados" class="capa-resultados"></div>
+    <input type="hidden" name="capa" value="${esc(l.capa || "")}">
+    <label class="campo"><span>Título</span><input type="text" name="titulo" value="${esc(l.titulo)}" required></label>
+    <label class="campo"><span>Autor</span><input type="text" name="autor" value="${esc(l.autor)}"></label>
+    <div class="linha"><label class="campo"><span>Total de páginas</span><input type="number" name="paginas" min="0" inputmode="numeric" value="${l.paginas || ""}"></label>
+    <label class="campo"><span>Estou na página</span><input type="number" name="pagina_atual" min="0" inputmode="numeric" value="${l.pagina_atual || 0}"></label></div>
+    <div class="seg seg-form"><label><input type="radio" name="status" value="lendo" ${l.status === "lendo" ? "checked" : ""}><span>📖 Lendo</span></label>
+      <label><input type="radio" name="status" value="quero" ${l.status === "quero" ? "checked" : ""}><span>🔖 Quero ler</span></label>
+      <label><input type="radio" name="status" value="lido" ${l.status === "lido" ? "checked" : ""}><span>✓ Já li</span></label></div>
+    <button class="b prim largo mt" type="submit">${novo ? "Adicionar à estante" : "Salvar"}</button>
+    ${novo ? "" : `<button class="b perigo largo mt" type="button" data-a="apagarLivro" data-id="${l.id}">Apagar livro</button>`}
+  </form>`);
+}
+function definirCapa(url, extra = {}) {
+  const f = $("form[data-form=livro]");
+  if (!f) return;
+  f.elements.capa.value = url;
+  $("#capaPrev").innerHTML = capa({ capa: url, titulo: f.elements.titulo.value }, "g");
+  if (extra.paginas && !+f.elements.paginas.value) f.elements.paginas.value = extra.paginas;
+  if (extra.autor && !f.elements.autor.value) f.elements.autor.value = extra.autor;
+  $("#capaResultados").innerHTML = "";
 }
 
 function resumoSemana(dom) {
@@ -500,9 +710,9 @@ function telaSemana() {
     <div class="nav-dia"><button class="icone-btn" data-a="semAnt">‹</button><button class="icone-btn" data-a="semProx" ${atual ? "disabled" : ""}>›</button></div></header>`;
 
   let t = `<table class="tabela-sem"><tr><th></th>${SEG_A_DOM.map((s, i) => `<th>${SEM_LETRA[s]}<br><span style="font-weight:500">${+addDias(seg, i).slice(8)}</span></th>`).join("")}</tr>`;
-  for (const k of ORDEM) {
-    if (!c[k].ativo) continue;
-    t += `<tr style="${corH(k)}"><th class="hab">${H[k].emoji}</th>`;
+  for (const k of lista()) {
+    if (BASE.includes(k) && !c[k].ativo) continue;
+    t += `<tr style="${corH(k)}"><th class="hab">${info(k).emoji}</th>`;
     for (let i = 0; i < 7; i++) {
       const d = addDias(seg, i), f = feito(d, k), p = programado(k, d);
       const cls = d > hj ? "futuro" : f ? "ok" : !p ? "livre" : d === hj ? "" : "nao";
@@ -559,6 +769,34 @@ function telaSemana() {
   return h;
 }
 
+function diasTxt(d) {
+  if (!Array.isArray(d) || d.length === 7) return "todo dia";
+  if (d.join() === "1,2,3,4,5") return "seg a sex";
+  if (d.join() === "1,2,3,4,5,6") return "seg a sáb";
+  return SEG_A_DOM.filter((s) => d.includes(s)).map((s) => SEM_NOME[s].slice(0, 3).toLowerCase()).join(", ");
+}
+function modalHabito(x) {
+  const novo = !x;
+  x = x || { emoji: "🧘", cor: CORES[7], tipo: "check", meta: 1, unidade: "", passo: 1, hora: "", dias: [0, 1, 2, 3, 4, 5, 6], ativo: true };
+  abrirModal(`<h3>${novo ? "Novo hábito" : "Editar hábito"}</h3>
+  <form data-form="habito" data-id="${x.id || ""}" class="form-hab" style="--c:${x.cor}">
+    <label class="campo"><span>Nome</span><input type="text" name="nome" value="${esc(x.nome)}" placeholder="Ex.: Meditar, Tomar vitaminas" required maxlength="40"></label>
+    <label class="campo"><span>Ícone</span></label><div class="grade-icones">${ICONES.map((e) => `<label><input type="radio" name="emoji" value="${e}" ${e === x.emoji ? "checked" : ""}><span>${e}</span></label>`).join("")}</div>
+    <label class="campo mt"><span>Cor</span></label><div class="grade-cores">${CORES.map((cor) => `<label><input type="radio" name="cor" value="${cor}" ${cor === x.cor ? "checked" : ""}><span style="background:${cor}"></span></label>`).join("")}</div>
+    <label class="campo mt"><span>Como marcar</span></label>
+    <div class="seg seg-form"><label><input type="radio" name="tipo" value="check" ${x.tipo === "check" ? "checked" : ""}><span>✓ Feito / não feito</span></label>
+      <label><input type="radio" name="tipo" value="qtd" ${x.tipo !== "check" ? "checked" : ""}><span>🔢 Com quantidade</span></label></div>
+    <div class="so-qtd"><div class="linha"><label class="campo"><span>Meta por dia</span><input type="number" name="meta" min="0.1" step="any" value="${x.meta || 1}"></label>
+      <label class="campo"><span>Unidade</span><input type="text" name="unidade" value="${esc(x.unidade)}" placeholder="min, copos, vezes"></label></div>
+      <label class="campo"><span>Quanto soma cada toque no botão +</span><input type="number" name="passo" min="0.1" step="any" value="${x.passo || 1}"></label></div>
+    <label class="campo"><span>Horário do lembrete (deixe vazio para não ter lembrete)</span><input type="time" name="hora" value="${x.hora || ""}"></label>
+    <label class="campo"><span>Dias</span>${seletorDias("dias", x.dias)}</label>
+    ${novo ? "" : chave("ativo", x.ativo !== false, "Ativo (desligue para pausar sem apagar)")}
+    <button class="b prim largo mt" type="submit">${novo ? "Criar hábito" : "Salvar"}</button>
+    ${novo ? "" : `<button class="b perigo largo mt" type="button" data-a="apagarHabito" data-id="${x.id}">Apagar hábito</button>`}
+  </form>`);
+}
+
 function seletorDias(nome, sel) {
   return `<div class="dias">${SEG_A_DOM.map((s) => `<label><input type="checkbox" name="${nome}" value="${s}" ${(sel || []).includes(s) ? "checked" : ""}><span>${SEM_LETRA[s]}</span></label>`).join("")}</div>`;
 }
@@ -566,11 +804,19 @@ const chave = (nome, on, rot = "Ativo") => `<label class="campo chave"><span sty
 
 function telaAjustes() {
   const c = S.cfg;
-  const bloco = (k, conteudo) => `<details class="aj" style="${corH(k)}"><summary><span class="h-ico">${H[k].emoji}</span>${H[k].nome}</summary><div class="corpo">${conteudo}</div></details>`;
+  const bloco = (k, conteudo) => `<details class="aj" style="${corH(k)}"><summary><span class="h-ico">${info(k).emoji}</span>${info(k).nome}</summary><div class="corpo">${conteudo}</div></details>`;
   let h = `<header class="topo"><div><h1>Ajustes</h1><div class="sub">Metas, horários e lembretes</div></div></header>`;
   h += faixaNotificacoes();
   if (!DEMO && typeof Notification !== "undefined" && Notification.permission === "granted" && lerLocal("rumo_push_ok", false))
     h += `<button class="b largo" data-a="testarPush" style="margin-bottom:14px">🔔 Enviar notificação de teste</button>`;
+  const extras = c.extras || [];
+  h += `<div class="titulo-sec" style="margin-top:4px">Seus hábitos</div><section class="cartao">
+    ${extras.length ? extras.map((x) => `<button class="item-hab" data-a="editarHabito" data-id="${x.id}" style="--c:${x.cor}">
+      <span class="h-ico">${x.emoji}</span><span class="h-nome"><b>${esc(x.nome)}${x.ativo === false ? " <small class=sub>(pausado)</small>" : ""}</b>
+      <span>${x.tipo === "check" ? "Sim/não" : `${num(x.meta)} ${esc(x.unidade || "")}`}${x.hora ? ` · ${fmtHora(x.hora)}` : " · sem lembrete"} · ${diasTxt(x.dias)}</span></span><span class="sub">✏️</span></button>`).join("")
+      : `<p class="sub" style="margin:0 0 4px">Crie hábitos além dos cinco principais: meditar, não fumar, tomar vitaminas…</p>`}
+    <button class="b prim largo mt" data-a="novoHabito">+ Novo hábito</button></section>
+    <div class="titulo-sec">Hábitos principais</div>`;
   h += `<form data-form="ajustes">
     <section class="cartao"><label class="campo" style="margin:0"><span>Seu nome</span><input type="text" name="nome" value="${esc(c.nome)}"></label></section>
     ${bloco("sono", `${chave("sono.ativo", c.sono.ativo)}
@@ -625,8 +871,8 @@ function telaLogin(msg = "") {
 /* ============================ Render ============================ */
 function render() {
   if (!S.pronto) return;
-  const telas = { hoje: telaHoje, progresso: telaProgresso, semana: telaSemana, ajustes: telaAjustes };
-  const abas = [["hoje", "☀️", "Hoje"], ["progresso", "📈", "Progresso"], ["semana", "🗓️", "Semana"], ["ajustes", "⚙️", "Ajustes"]];
+  const telas = { hoje: telaHoje, progresso: telaProgresso, estante: telaEstante, semana: telaSemana, ajustes: telaAjustes };
+  const abas = [["hoje", "☀️", "Hoje"], ["progresso", "📈", "Progresso"], ["estante", "📚", "Estante"], ["semana", "🗓️", "Semana"], ["ajustes", "⚙️", "Ajustes"]];
   const abertos = [...document.querySelectorAll("details.aj[open]")].map((d) => d.querySelector("summary").textContent);
   $("#app").innerHTML = telas[S.aba]() +
     `<nav class="abas"><div class="in">${abas.map(([k, i, n]) => `<button class="${S.aba === k ? "on" : ""}" data-a="aba" data-v="${k}"><span class="i">${i}</span>${n}</button>`).join("")}</div></nav>`;
@@ -654,10 +900,11 @@ const ACOES = {
     const { h, d } = el.dataset, r = reg(d, h);
     salvarReg(h, d, (r?.valor || 0) + +el.dataset.v, r?.detalhe || {});
   },
-  meta(el) { const { h, d } = el.dataset; salvarReg(h, d, Math.max(S.cfg[h].meta, reg(d, h)?.valor || 0), reg(d, h)?.detalhe || {}); },
+  meta(el) { const { h, d } = el.dataset; salvarReg(h, d, Math.max(hc(h).meta, reg(d, h)?.valor || 0), reg(d, h)?.detalhe || {}); },
+  check(el) { const { h, d } = el.dataset; if (feito(d, h)) apagarReg(h, d); else salvarReg(h, d, 1); },
   editarNum(el) {
-    const { h, d } = el.dataset, un = h === "leitura" ? "páginas" : "minutos";
-    abrirModal(`<h3>${H[h].emoji} ${H[h].nome} · ${dm(d)}</h3><form data-form="num" data-h="${h}" data-d="${d}">
+    const { h, d } = el.dataset, un = h === "leitura" ? "páginas" : h === "estudo" ? "minutos" : (hc(h).unidade || "unidades");
+    abrirModal(`<h3>${info(h).emoji} ${esc(info(h).nome)} · ${dm(d)}</h3><form data-form="num" data-h="${h}" data-d="${d}">
       <label class="campo"><span>Quantas ${un}?</span><input type="number" name="v" min="0" inputmode="numeric" value="${reg(d, h)?.valor || ""}"></label>
       <button class="b prim largo" type="submit">Salvar</button></form>`);
   },
@@ -700,6 +947,46 @@ const ACOES = {
     const id = +el.dataset.id;
     if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Apagar?"; return; }
     try { await S.api.apagarPeso(id); S.pesos = S.pesos.filter((p) => +p.id !== id); render(); ACOES.histPeso(); toast("Pesagem apagada"); } catch (e) { erro(e); }
+  },
+  novoLivro() { modalLivro(null); },
+  editarLivro(el) { modalLivro(S.livros.find((l) => String(l.id) === el.dataset.id)); },
+  tirarCapa() { definirCapa(""); },
+  async buscarCapa() {
+    const f = $("form[data-form=livro]"), t = f.elements.titulo.value.trim();
+    if (!t) return toast("Escreva o título primeiro");
+    const box = $("#capaResultados");
+    box.innerHTML = `<p class="sub">Buscando…</p>`;
+    const rs = await buscarCapas(t, f.elements.autor.value.trim());
+    if (!$("#capaResultados")) return;
+    box.innerHTML = rs.length
+      ? `<p class="sub" style="margin:0 0 8px">Toque na capa certa:</p><div class="grade-capas">${rs.map((r) => `<button type="button" data-a="escolherCapa" data-url="${esc(r.capa)}" data-pag="${r.paginas || ""}" data-autor="${esc(r.autor || "")}"><img src="${esc(r.capa)}" alt="" referrerpolicy="no-referrer"><small>${r.paginas ? r.paginas + " p." : ""}</small></button>`).join("")}</div>`
+      : `<p class="sub">Não encontrei. Tente só o título, ou use 📷 Foto da capa.</p>`;
+  },
+  escolherCapa(el) { definirCapa(el.dataset.url, { paginas: +el.dataset.pag, autor: el.dataset.autor }); },
+  async apagarLivro(el) {
+    if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Toque de novo para apagar"; return; }
+    const id = +el.dataset.id;
+    try { await S.api.apagarLivro(id); S.livros = S.livros.filter((l) => +l.id !== id); fecharModal(); render(); toast("Livro apagado"); } catch (e) { erro(e); }
+  },
+  paginaLivro(el) {
+    const l = S.livros.find((x) => String(x.id) === el.dataset.id);
+    abrirModal(`<h3>📍 ${esc(l.titulo)}</h3><form data-form="paginaLivro" data-id="${l.id}">
+      <label class="campo"><span>Em que página você está?${l.paginas ? ` (de ${l.paginas})` : ""}</span><input type="number" name="p" min="0" ${l.paginas ? `max="${l.paginas}"` : ""} inputmode="numeric" value="${l.pagina_atual}"></label>
+      ${chave("somar", true, "Somar as páginas novas na leitura de hoje")}
+      <button class="b prim largo" type="submit">Salvar</button></form>`);
+  },
+  async lerEste(el) {
+    const c = structuredClone(S.cfg);
+    c.leitura.livro_atual = +el.dataset.id || el.dataset.id;
+    try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); render(); toast("📖 As páginas do dia vão para este livro"); } catch (e) { erro(e); }
+  },
+  novoHabito() { modalHabito(null); },
+  editarHabito(el) { modalHabito((S.cfg.extras || []).find((x) => x.id === el.dataset.id)); },
+  async apagarHabito(el) {
+    if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Toque de novo para apagar (o histórico some do app)"; return; }
+    const c = structuredClone(S.cfg);
+    c.extras = (c.extras || []).filter((x) => x.id !== el.dataset.id);
+    try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); fecharModal(); render(); toast("Hábito apagado"); } catch (e) { erro(e); }
   },
   editarRev() { S.editandoRev = true; render(); },
   cancelarRev() { S.editandoRev = false; render(); },
@@ -771,6 +1058,69 @@ const FORMS = {
       toast("📋 Revisão salva. Boa semana!");
     } catch (e) { erro(e); }
   },
+  async livro(f, fd) {
+    const antigo = S.livros.find((l) => String(l.id) === f.dataset.id);
+    const status = fd.get("status") || "lendo";
+    const paginas = parseInt(fd.get("paginas")) || 0;
+    let pagina_atual = Math.max(0, parseInt(fd.get("pagina_atual")) || 0);
+    if (paginas) pagina_atual = Math.min(paginas, pagina_atual);
+    const l = {
+      ...(antigo || {}),
+      titulo: fd.get("titulo").trim(), autor: fd.get("autor").trim(), paginas, capa: fd.get("capa") || null, status,
+      pagina_atual: status === "lido" && paginas ? paginas : pagina_atual,
+    };
+    if (!l.titulo) return toast("Escreva o título");
+    if (status === "lendo" && !l.inicio) l.inicio = hoje();
+    if (status === "lido") l.fim = l.fim || hoje(); else l.fim = null;
+    try {
+      const salvo = await S.api.salvarLivro(l);
+      S.livros = [...S.livros.filter((x) => x.id !== salvo.id), salvo].sort((a, b) => (a.criado_em || "").localeCompare(b.criado_em || ""));
+      if (status === "lendo" && (!antigo || antigo.status !== "lendo")) {
+        const c = structuredClone(S.cfg); c.leitura.livro_atual = salvo.id;
+        await S.api.salvarCfg(c); S.cfg = mesclarCfg(c);
+      }
+      fecharModal(); render();
+      toast(status === "lido" && antigo?.status !== "lido" ? `🎉 "${l.titulo}" na estante!` : "📚 Livro salvo");
+    } catch (e) { erro(e); }
+  },
+  async paginaLivro(f, fd) {
+    const l = S.livros.find((x) => String(x.id) === f.dataset.id);
+    const nova = Math.max(0, Math.min(l.paginas || Infinity, parseInt(fd.get("p")) || 0));
+    const delta = nova - l.pagina_atual;
+    fecharModal();
+    if (f.elements.somar.checked && delta > 0) {
+      if (livroAtual()?.id !== l.id) { const c = structuredClone(S.cfg); c.leitura.livro_atual = l.id; S.cfg = mesclarCfg(c); S.api.salvarCfg(c).catch(erro); }
+      const r = reg(hoje(), "leitura");
+      return salvarReg("leitura", hoje(), (r?.valor || 0) + delta, r?.detalhe || {});
+    }
+    const acabou = l.paginas && nova >= l.paginas;
+    Object.assign(l, { pagina_atual: nova }, acabou ? { status: "lido", fim: hoje() } : {});
+    render();
+    toast(acabou ? `🎉 Você terminou "${l.titulo}"!` : "📍 Página atualizada");
+    try { await S.api.salvarLivro({ ...l }); } catch (e) { erro(e); }
+  },
+  async habito(f, fd) {
+    const c = structuredClone(S.cfg);
+    const id = f.dataset.id || "x" + Date.now().toString(36);
+    const antigo = (c.extras || []).find((x) => x.id === id) || {};
+    const x = {
+      ...antigo, id, criado: antigo.criado || hoje(),
+      nome: fd.get("nome").trim(),
+      emoji: fd.get("emoji") || "⭐",
+      cor: fd.get("cor") || CORES[0],
+      tipo: fd.get("tipo") === "check" ? "check" : "qtd",
+      meta: parseFloat(String(fd.get("meta")).replace(",", ".")) || 1,
+      unidade: fd.get("unidade").trim(),
+      passo: parseFloat(String(fd.get("passo")).replace(",", ".")) || 1,
+      hora: fd.get("hora") || "",
+      dias: fd.getAll("dias").map(Number).sort(),
+      ativo: f.elements.ativo ? f.elements.ativo.checked : true,
+    };
+    if (!x.nome) return toast("Dê um nome ao hábito");
+    if (!x.dias.length) return toast("Escolha pelo menos um dia");
+    c.extras = [...(c.extras || []).filter((e) => e.id !== id), x];
+    try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); fecharModal(); render(); toast(f.dataset.id ? "✅ Hábito atualizado" : `${x.emoji} Hábito criado!`); } catch (e) { erro(e); }
+  },
   async ajustes(f, fd) {
     const c = structuredClone(S.cfg);
     c.nome = fd.get("nome").trim() || "Você";
@@ -804,6 +1154,15 @@ document.addEventListener("click", (e) => {
   if (!el || el.disabled) return;
   const fn = ACOES[el.dataset.a];
   if (fn) { e.preventDefault(); fn(el); }
+});
+document.addEventListener("change", async (e) => {
+  if (!e.target.matches("[data-capa-arquivo]") || !e.target.files[0]) return;
+  try {
+    toast("Enviando capa…");
+    const blob = await reduzirImagem(e.target.files[0]);
+    definirCapa(await S.api.subirCapa(blob));
+    toast("📷 Capa adicionada");
+  } catch (err) { erro(err); }
 });
 document.addEventListener("submit", (e) => {
   const f = e.target.closest("[data-form]");
