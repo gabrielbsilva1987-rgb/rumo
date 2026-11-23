@@ -159,7 +159,10 @@ input[type=text], input[type=email], input[type=password], input[type=number], i
 textarea { height: auto; min-height: 72px; padding: 12px 14px; resize: vertical; }
 input:focus, select:focus, textarea:focus { border-color: var(--acc); }
 .linha { display: flex; gap: 10px; }
-.linha > * { flex: 1; }
+.linha > * { flex: 1; min-width: 0; }
+/* iOS: campos de data/hora têm largura mínima própria e vazam do cartão */
+input[type=time], input[type=date] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; display: block; text-align: left; }
+input[type=time]::-webkit-date-and-time-value, input[type=date]::-webkit-date-and-time-value { text-align: left; }
 .dias { display: flex; gap: 5px; }
 .dias label { flex: 1; }
 .dias input { display: none; }

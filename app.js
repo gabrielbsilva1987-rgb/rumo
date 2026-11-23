@@ -795,8 +795,8 @@ function telaSemana() {
       <div class="titulo-sec" style="margin:18px 0 10px">Metas da próxima semana</div>
       <div class="linha"><label class="campo"><span>📖 Páginas/dia</span><input type="number" name="leitura.meta" min="1" value="${c.leitura.meta}"></label>
       <label class="campo"><span>🎓 Estudo (min)</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label></div>
-      <div class="linha"><label class="campo"><span>💧 Água (litros)</span><input type="number" name="agua.litros" min="0.5" step="0.25" value="${c.agua.meta / 1000}"></label>
-      <label class="campo"><span>🌙 Sono (horas)</span><input type="number" name="sono.meta" min="5" max="10" step="0.5" value="${c.sono.meta}"></label></div>
+      <div class="linha"><label class="campo"><span>💧 Água (litros)</span><input type="text" inputmode="decimal" autocomplete="off" name="agua.litros" value="${num(c.agua.meta / 1000, 2)}"></label>
+      <label class="campo"><span>🌙 Sono (horas)</span><input type="text" inputmode="decimal" autocomplete="off" name="sono.meta" value="${num(c.sono.meta)}"></label></div>
       <label class="campo" style="--c:var(--exercicio)"><span>🏋️ Dias de treino</span>${seletorDias("exercicio.dias", c.exercicio.dias)}</label>
       <button class="b prim largo mt" type="submit">Salvar revisão</button>
       ${rev ? `<button class="b largo mt" type="button" data-a="cancelarRev">Cancelar</button>` : ""}
@@ -863,11 +863,11 @@ function telaAjustes() {
       : `<p class="sub" style="margin:0 0 4px">Crie hábitos além dos cinco principais: meditar, não fumar, tomar vitaminas…</p>`}
     <button class="b prim largo mt" data-a="novoHabito">+ Novo hábito</button></section>
     <div class="titulo-sec">Hábitos principais</div>`;
-  h += `<form data-form="ajustes">
+  h += `<form data-form="ajustes" novalidate>
     <section class="cartao"><label class="campo" style="margin:0"><span>Seu nome</span><input type="text" name="nome" value="${esc(c.nome)}"></label></section>
     ${bloco("sono", `${chave("sono.ativo", c.sono.ativo)}
       <div class="linha"><label class="campo"><span>Acordar às</span><input type="time" name="sono.acordar" value="${c.sono.acordar}"></label>
-      <label class="campo"><span>Meta (horas)</span><input type="number" name="sono.meta" min="5" max="10" step="0.5" value="${c.sono.meta}"></label></div>
+      <label class="campo"><span>Meta (horas)</span><input type="text" inputmode="decimal" autocomplete="off" name="sono.meta" value="${num(c.sono.meta)}"></label></div>
       <label class="campo"><span>Avisar para desacelerar (min antes de deitar)</span><input type="number" name="sono.aviso_antes_min" min="0" step="5" value="${c.sono.aviso_antes_min}"></label>
       <p class="sub">Com essa meta, o horário de deitar é ${fmtMin(hm(c.sono.acordar) - c.sono.meta * 60)}.</p>`)}
     ${bloco("leitura", `${chave("leitura.ativo", c.leitura.ativo)}
@@ -875,7 +875,7 @@ function telaAjustes() {
       <label class="campo"><span>Lembrete</span><input type="time" name="leitura.hora" value="${c.leitura.hora}"></label></div>
       <label class="campo"><span>Dias</span>${seletorDias("leitura.dias", c.leitura.dias)}</label>`)}
     ${bloco("agua", `${chave("agua.ativo", c.agua.ativo)}
-      <label class="campo"><span>Meta (litros por dia)</span><input type="number" name="agua.litros" min="0.5" step="0.25" value="${c.agua.meta / 1000}"></label>
+      <label class="campo"><span>Meta (litros por dia)</span><input type="text" inputmode="decimal" autocomplete="off" name="agua.litros" value="${num(c.agua.meta / 1000, 2)}"></label>
       <div class="linha"><label class="campo"><span>Das</span><input type="time" name="agua.inicio" value="${c.agua.inicio}"></label>
       <label class="campo"><span>Até</span><input type="time" name="agua.fim" value="${c.agua.fim}"></label></div>
       <label class="campo"><span>Verificar a cada (min)</span><input type="number" name="agua.intervalo_min" min="30" step="15" value="${c.agua.intervalo_min}"></label>
@@ -896,8 +896,8 @@ function telaAjustes() {
       <button type="button" class="b largo" data-a="configSaude">📲 Configurar o atalho</button>
     </div></details>
     <details class="aj" style="--c:var(--peso)"><summary><span class="h-ico">⚖️</span>Peso e revisão</summary><div class="corpo">
-      <div class="linha"><label class="campo"><span>Peso inicial (kg)</span><input type="number" name="peso.inicial" step="0.1" value="${c.peso.inicial}"></label>
-      <label class="campo"><span>Meta (kg)</span><input type="number" name="peso.meta" step="0.1" value="${c.peso.meta}"></label></div>
+      <div class="linha"><label class="campo"><span>Peso inicial (kg)</span><input type="text" inputmode="decimal" autocomplete="off" name="peso.inicial" value="${num(c.peso.inicial)}"></label>
+      <label class="campo"><span>Meta (kg)</span><input type="text" inputmode="decimal" autocomplete="off" name="peso.meta" value="${num(c.peso.meta)}"></label></div>
       <div class="linha"><label class="campo"><span>Dia da pesagem</span><select name="peso.dia">${SEG_A_DOM.map((s) => `<option value="${s}" ${+c.peso.dia === s ? "selected" : ""}>${SEM_NOME[s]}</option>`).join("")}</select></label>
       <label class="campo"><span>Horário</span><input type="time" name="peso.hora" value="${c.peso.hora}"></label></div>
       <div class="linha"><label class="campo"><span>Dia da revisão</span><select name="revisao.dia">${SEG_A_DOM.map((s) => `<option value="${s}" ${+c.revisao.dia === s ? "selected" : ""}>${SEM_NOME[s]}</option>`).join("")}</select></label>
@@ -1212,6 +1212,10 @@ const FORMS = {
     const c = structuredClone(S.cfg);
     c.nome = fd.get("nome").trim() || "Você";
     const campos = [...new Set([...f.elements].map((e) => e.name).filter((n) => n && n !== "nome"))];
+    for (const n of ["peso.inicial", "peso.meta"]) {
+      const v = parseFloat(String(fd.get(n)).replace(",", "."));
+      if (!(v > 20 && v < 400)) return toast("Confira o peso: use só números, ex.: 137,5");
+    }
     aplicarCampos(c, f, fd, campos);
     try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); render(); toast("✅ Ajustes salvos"); } catch (e) { erro(e); }
   },
@@ -1226,10 +1230,10 @@ function aplicarCampos(c, f, fd, nomes) {
     let v;
     if (k === "dias") v = fd.getAll(n).map(Number).sort();
     else if (tipo === "checkbox") v = el.checked;
-    else if (k === "litros") { if (g) c[g].meta = Math.round(parseFloat(fd.get(n)) * 1000) || c[g].meta; continue; }
+    else if (k === "litros") { if (g) c[g].meta = Math.round(parseFloat(String(fd.get(n)).replace(",", ".")) * 1000) || c[g].meta; continue; }
     else if (k === "tipos") v = String(fd.get(n)).split(",").map((s) => s.trim()).filter(Boolean);
     else if (g === "saude" && fd.get(n) === "") v = k === "min_treino" ? 20 : 0;
-    else if (tipo === "number" || tipo === "select-one") v = parseFloat(String(fd.get(n)).replace(",", "."));
+    else if (tipo === "number" || tipo === "select-one" || el.inputMode === "decimal") v = parseFloat(String(fd.get(n)).replace(",", "."));
     else v = fd.get(n);
     if (typeof v === "number" && isNaN(v)) continue;
     if (g) c[g] = { ...c[g], [k]: v }; else c[k] = v;
