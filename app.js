@@ -1,0 +1,848 @@
+import { CONFIG } from "./config.js";
+
+/* ============================ Constantes ============================ */
+const TZ = "America/Sao_Paulo";
+const H = {
+  sono: { nome: "Sono", emoji: "🌙" },
+  leitura: { nome: "Leitura", emoji: "📖" },
+  agua: { nome: "Água", emoji: "💧" },
+  exercicio: { nome: "Treino", emoji: "🏋️" },
+  estudo: { nome: "Estudo", emoji: "🎓" },
+};
+const ORDEM = Object.keys(H);
+const SEM_LETRA = ["D", "S", "T", "Q", "Q", "S", "S"];
+const SEM_NOME = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
+const SEG_A_DOM = [1, 2, 3, 4, 5, 6, 0];
+const NOTAS = ["😣", "😕", "😐", "🙂", "🤩"];
+
+// Precisa ser igual ao PADRAO da função "habitos" no Supabase
+const CFG_PADRAO = {
+  nome: "Gabriel",
+  leitura: { ativo: true, meta: 20, hora: "06:30", dias: [0, 1, 2, 3, 4, 5, 6], reforco_min: 90 },
+  estudo: { ativo: true, meta: 30, hora: "20:00", dias: [1, 2, 3, 4, 5], reforco_min: 60 },
+  exercicio: { ativo: true, hora: "18:00", dias: [1, 2, 3, 4, 5, 6], tipos: ["Academia", "Cardio"], reforco_min: 60 },
+  agua: { ativo: true, meta: 3000, inicio: "07:00", fim: "21:00", intervalo_min: 120 },
+  sono: { ativo: true, meta: 7, acordar: "06:00", aviso_antes_min: 45 },
+  peso: { inicial: 139, meta: 99, dia: 0, hora: "08:00" },
+  revisao: { dia: 0, hora: "17:00" },
+  fechamento: "21:30",
+};
+function mesclarCfg(d) {
+  const c = { ...CFG_PADRAO, ...(d || {}) };
+  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao"]) c[k] = { ...CFG_PADRAO[k], ...((d || {})[k] || {}) };
+  return c;
+}
+
+const PARAMS = new URLSearchParams(location.search);
+const DEMO = PARAMS.has("demo") || !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.includes("COLE_AQUI");
+
+/* ============================ Utilidades ============================ */
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function partesSP(d = new Date()) {
+  const o = {};
+  new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+    .formatToParts(d).forEach((p) => (o[p.type] = p.value));
+  if (o.hour === "24") o.hour = "00";
+  return o;
+}
+const hoje = () => { const o = partesSP(); return `${o.year}-${o.month}-${o.day}`; };
+const minAgora = () => { const o = partesSP(); return +o.hour * 60 + +o.minute; };
+const hm = (s) => { const [h, m] = String(s || "00:00").split(":").map(Number); return h * 60 + (m || 0); };
+const fmtMin = (t) => { t = ((t % 1440) + 1440) % 1440; return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+const fmtHora = (s) => fmtMin(hm(s));
+function addDias(s, n) { const d = new Date(s + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+const semDe = (s) => new Date(s + "T12:00:00Z").getUTCDay();
+const domingoDe = (s) => addDias(s, (7 - semDe(s)) % 7);
+const diasEntre = (a, b) => Math.round((new Date(b + "T12:00:00Z") - new Date(a + "T12:00:00Z")) / 864e5);
+const dm = (s) => { const [, m, d] = s.split("-"); return `${+d}/${+m}`; };
+const dataLonga = (s) => new Date(s + "T12:00:00Z").toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+const mesAno = (s) => new Date(s + "T12:00:00Z").toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" });
+const num = (x, casas = 1) => (+x).toLocaleString("pt-BR", { maximumFractionDigits: casas });
+const litros = (ml) => num(ml / 1000, 2) + " L";
+const horasTxt = (h) => { const m = Math.round(h * 60); return `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, "0") : ""}`; };
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("ver");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("ver"), 2400);
+}
+function lerLocal(k, p) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : p; } catch { return p; } }
+function gravarLocal(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+function b64ToU8(b) { const p = "=".repeat((4 - (b.length % 4)) % 4); const r = atob((b + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from([...r].map((c) => c.charCodeAt(0))); }
+
+/* ============================ Dados ============================ */
+function apiSupabase(sb, uid) {
+  const ok = ({ data, error }) => { if (error) throw error; return data; };
+  return {
+    async cfg() {
+      const d = ok(await sb.from("h_config").select("dados").maybeSingle());
+      if (!d) ok(await sb.from("h_config").insert({ dados: {} }));
+      return mesclarCfg(d?.dados);
+    },
+    async salvarCfg(c) { ok(await sb.from("h_config").upsert({ user_id: uid, dados: c, atualizado: new Date().toISOString() })); },
+    async regs(de) {
+      let out = [];
+      for (let i = 0; ; i += 1000) {
+        const p = ok(await sb.from("h_registros").select("data,habito,valor,feito,detalhe").gte("data", de).order("data").range(i, i + 999));
+        out = out.concat(p);
+        if (p.length < 1000) break;
+      }
+      return out;
+    },
+    async salvarReg(r) { ok(await sb.from("h_registros").upsert({ ...r, user_id: uid, atualizado: new Date().toISOString() })); },
+    async apagarReg(data, habito) { ok(await sb.from("h_registros").delete().eq("data", data).eq("habito", habito)); },
+    async pesos() { return ok(await sb.from("h_peso").select("id,data,kg").order("data")); },
+    async salvarPeso(data, kg) { ok(await sb.from("h_peso").upsert({ user_id: uid, data, kg }, { onConflict: "user_id,data" })); },
+    async apagarPeso(id) { ok(await sb.from("h_peso").delete().eq("id", id)); },
+    async revs() { return ok(await sb.from("h_revisoes").select("semana,dados").order("semana", { ascending: false })); },
+    async salvarRev(semana, dados) { ok(await sb.from("h_revisoes").upsert({ user_id: uid, semana, dados })); },
+    async salvarSub(sub) {
+      const j = sub.toJSON();
+      ok(await sb.from("h_push").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, user_id: uid }, { onConflict: "endpoint" }));
+    },
+    async teste() { ok(await sb.from("h_fila").insert({ titulo: "🔔 Teste do Rumo", corpo: "Tudo certo! Os lembretes vão chegar neste celular." })); },
+  };
+}
+
+function apiLocal() {
+  const L = (k, p) => lerLocal("rumo_demo_" + k, p);
+  const G = (k, v) => gravarLocal("rumo_demo_" + k, v);
+  if (!L("ok")) semearDemo(G);
+  return {
+    async cfg() { return mesclarCfg(L("cfg", {})); },
+    async salvarCfg(c) { G("cfg", c); },
+    async regs(de) { return L("regs", []).filter((r) => r.data >= de); },
+    async salvarReg(r) { const a = L("regs", []).filter((x) => !(x.data === r.data && x.habito === r.habito)); a.push(r); G("regs", a); },
+    async apagarReg(data, habito) { G("regs", L("regs", []).filter((x) => !(x.data === data && x.habito === habito))); },
+    async pesos() { return L("pesos", []).sort((a, b) => a.data.localeCompare(b.data)); },
+    async salvarPeso(data, kg) { const a = L("pesos", []).filter((p) => p.data !== data); a.push({ id: Date.now(), data, kg }); G("pesos", a); },
+    async apagarPeso(id) { G("pesos", L("pesos", []).filter((p) => p.id !== id)); },
+    async revs() { return L("revs", []).sort((a, b) => b.semana.localeCompare(a.semana)); },
+    async salvarRev(semana, dados) { const a = L("revs", []).filter((r) => r.semana !== semana); a.push({ semana, dados }); G("revs", a); },
+    async salvarSub() { throw new Error("No modo demonstração não há notificações."); },
+    async teste() { throw new Error("No modo demonstração não há notificações."); },
+  };
+}
+
+// Dados de exemplo (só no modo demonstração)
+function semearDemo(G) {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const c = mesclarCfg({});
+  const regs = [], pesos = [], hj = hoje();
+  for (let i = 48; i >= 1; i--) {
+    const d = addDias(hj, -i), s = semDe(d), bom = i < 30 ? 0.82 : 0.6;
+    const push = (habito, valor, detalhe = {}) => regs.push({ data: d, habito, valor, detalhe, feito: calcFeito(habito, valor, c) });
+    push("sono", rnd() < bom ? 7 + Math.round(rnd() * 4) / 4 : 5.5 + Math.round(rnd() * 4) / 4, { deitou: "23:00" });
+    push("leitura", rnd() < bom ? 20 + Math.round(rnd() * 10) : Math.round(rnd() * 15));
+    push("agua", rnd() < bom ? 3000 : 1500 + Math.round(rnd() * 5) * 250);
+    if (c.exercicio.dias.includes(s) && rnd() < bom + 0.05) push("exercicio", 2, { tipos: ["Academia", "Cardio"] });
+    if (c.estudo.dias.includes(s)) push("estudo", rnd() < bom ? 30 + (rnd() < 0.3 ? 15 : 0) : 15);
+    if (s === 0) pesos.push({ id: i, data: d, kg: Math.round((139 - (48 - i) * 0.13 + (rnd() - 0.5) * 0.8) * 10) / 10 });
+  }
+  regs.push({ data: hj, habito: "sono", valor: 7.5, detalhe: { deitou: "22:30" }, feito: true });
+  regs.push({ data: hj, habito: "leitura", valor: 20, detalhe: {}, feito: true });
+  regs.push({ data: hj, habito: "agua", valor: 1500, detalhe: {}, feito: false });
+  const ultDom = addDias(domingoDe(hj), -7);
+  const revs = [{ semana: ultDom, dados: { nota: 4, pct: 81, funcionou: "Ler logo depois do café.", atrapalhou: "Dormi tarde na quinta.", foco: "Deitar até 23h todos os dias" } }];
+  G("cfg", {}); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
+}
+
+/* ============================ Regras dos hábitos ============================ */
+function calcFeito(h, valor, c = S.cfg) {
+  if (h === "exercicio") return valor > 0;
+  return valor >= (c[h]?.meta ?? Infinity);
+}
+function programado(h, d, c = S.cfg) {
+  if (!c[h]?.ativo) return false;
+  const dias = c[h].dias;
+  return !Array.isArray(dias) || dias.includes(semDe(d));
+}
+const reg = (d, h) => S.regs.get(`${d}|${h}`);
+const feito = (d, h) => !!reg(d, h)?.feito;
+
+function placarDia(d) {
+  let prog = 0, ok = 0;
+  for (const h of ORDEM) {
+    if (!programado(h, d)) continue;
+    prog++;
+    if (feito(d, h)) ok++;
+  }
+  return { prog, ok, pct: prog ? ok / prog : 0 };
+}
+// Sequência de dias (programados) cumpridos de um hábito, terminando hoje
+function sequencia(h, ate = hoje()) {
+  let n = 0, d = ate;
+  if (programado(h, d) && !feito(d, h)) d = addDias(d, -1);
+  for (let i = 0; i < 400; i++, d = addDias(d, -1)) {
+    if (d < S.inicioDados) break;
+    if (!programado(h, d)) continue;
+    if (feito(d, h)) n++; else break;
+  }
+  return n;
+}
+function melhorSequencia(h, de, ate) {
+  let m = 0, n = 0;
+  for (let d = de; d <= ate; d = addDias(d, 1)) {
+    if (!programado(h, d)) continue;
+    if (feito(d, h)) { n++; m = Math.max(m, n); } else n = 0;
+  }
+  return m;
+}
+// Dias seguidos com pelo menos 80% dos hábitos
+function sequenciaGeral() {
+  let n = 0, d = hoje();
+  if (placarDia(d).pct < 0.8) d = addDias(d, -1);
+  for (let i = 0; i < 400; i++, d = addDias(d, -1)) {
+    if (d < S.inicioDados) break;
+    const p = placarDia(d);
+    if (!p.prog) continue;
+    if (p.pct >= 0.8) n++; else break;
+  }
+  return n;
+}
+function pesoAtual() { return S.pesos.length ? +S.pesos[S.pesos.length - 1].kg : +S.cfg.peso.inicial; }
+function tendenciaPeso() {
+  const ps = S.pesos.filter((p) => p.data >= addDias(hoje(), -63));
+  if (ps.length < 2) return null;
+  const xs = ps.map((p) => diasEntre(ps[0].data, p.data)), ys = ps.map((p) => +p.kg);
+  const mx = xs.reduce((a, b) => a + b) / xs.length, my = ys.reduce((a, b) => a + b) / ys.length;
+  let nu = 0, de = 0;
+  xs.forEach((x, i) => { nu += (x - mx) * (ys[i] - my); de += (x - mx) ** 2; });
+  if (!de) return null;
+  const porDia = nu / de, porSemana = porDia * 7;
+  let previsao = null;
+  const falta = pesoAtual() - S.cfg.peso.meta;
+  if (porDia < -0.005 && falta > 0) previsao = addDias(hoje(), Math.round(falta / -porDia));
+  return { porSemana, previsao };
+}
+
+/* ============================ Estado ============================ */
+const S = {
+  sb: null, api: null, cfg: mesclarCfg({}), regs: new Map(), pesos: [], revs: [],
+  aba: "hoje", dia: hoje(), periodo: 30, semana: domingoDe(hoje()), inicioDados: addDias(hoje(), -400), pronto: false,
+};
+
+async function carregar() {
+  const [cfg, regs, pesos, revs] = await Promise.all([S.api.cfg(), S.api.regs(S.inicioDados), S.api.pesos(), S.api.revs()]);
+  S.cfg = cfg;
+  S.regs = new Map(regs.map((r) => [`${r.data}|${r.habito}`, { ...r, valor: +r.valor }]));
+  S.pesos = pesos.map((p) => ({ ...p, kg: +p.kg }));
+  S.revs = revs;
+  S.pronto = true;
+}
+
+async function salvarReg(h, d, valor, detalhe = {}) {
+  valor = Math.max(0, Math.round(valor * 100) / 100);
+  if (!valor && h !== "exercicio") return apagarReg(h, d);
+  const r = { data: d, habito: h, valor, detalhe, feito: calcFeito(h, valor) };
+  const antes = reg(d, h);
+  S.regs.set(`${d}|${h}`, r);
+  render();
+  if (r.feito && !antes?.feito) celebrar(h, d);
+  try { await S.api.salvarReg(r); } catch (e) { erro(e); }
+}
+async function apagarReg(h, d) {
+  S.regs.delete(`${d}|${h}`);
+  render();
+  try { await S.api.apagarReg(d, h); } catch (e) { erro(e); }
+}
+function celebrar(h, d) {
+  const p = placarDia(d);
+  if (p.ok === p.prog && p.prog) return toast("🏆 Todos os hábitos do dia!");
+  const msgs = { sono: "🌙 Noite bem dormida!", leitura: "📖 Leitura do dia feita!", agua: "💧 Meta de água batida!", exercicio: "🏋️ Treino feito!", estudo: "🎓 Estudo do dia feito!" };
+  toast(msgs[h]);
+}
+function erro(e) { console.error(e); toast("⚠️ " + (e?.message || "Erro ao salvar. Verifique a internet.")); }
+
+/* ============================ Componentes ============================ */
+function anel(pct, tam = 108, esp = 11) {
+  const r = (tam - esp) / 2, c = 2 * Math.PI * r, m = tam / 2;
+  return `<svg class="anel" viewBox="0 0 ${tam} ${tam}" width="${tam}" height="${tam}">
+    <circle cx="${m}" cy="${m}" r="${r}" fill="none" stroke="var(--card2)" stroke-width="${esp}"/>
+    <circle cx="${m}" cy="${m}" r="${r}" fill="none" stroke="var(--acc)" stroke-width="${esp}" stroke-linecap="round"
+      stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - Math.min(1, pct))}" transform="rotate(-90 ${m} ${m})"/></svg>`;
+}
+const barra = (f) => `<div class="barra"><i style="width:${Math.min(100, Math.max(0, f * 100))}%"></i></div>`;
+function topoHabito(h, sub, ok) {
+  return `<div class="h-topo"><div class="h-ico">${H[h].emoji}</div><div class="h-nome"><b>${H[h].nome}</b><span>${sub}</span></div><div class="h-check">${ok ? "✓" : ""}</div></div>`;
+}
+const corH = (h) => `--c:var(--${h})`;
+
+function cartaoHabito(h, d) {
+  const c = S.cfg, r = reg(d, h), prog = programado(h, d), ok = !!r?.feito, v = r?.valor || 0;
+  if (!c[h].ativo) return "";
+  const cls = `habito ${ok ? "ok" : ""} ${!prog && !r ? "folga" : ""}`;
+  const seq = sequencia(h);
+  const seqTxt = seq >= 2 ? ` · 🔥 ${seq}` : "";
+  let corpo = "", sub = "";
+
+  if (h === "sono") {
+    const acordar = hm(c.sono.acordar), deitarIdeal = acordar - c.sono.meta * 60;
+    sub = `Meta ${c.sono.meta}h · deitar até ${fmtMin(deitarIdeal)}${seqTxt}`;
+    if (r) {
+      corpo = `<div class="h-valor"><b>${horasTxt(v)}</b><span>de sono${r.detalhe?.deitou ? ` · dormiu ${fmtHora(r.detalhe.deitou)}` : ""}</span></div>${barra(v / c.sono.meta)}
+        <div class="acoes"><button class="b" data-a="sonoOutro" data-d="${d}">✏️ Corrigir</button></div>`;
+    } else {
+      const ops = [-60, -30, 0, 30, 60].map((x) => deitarIdeal + x);
+      corpo = `<p class="sub" style="margin:12px 0 0">Que horas você dormiu?</p>
+        <div class="acoes">${ops.map((t) => `<button class="b min" data-a="sono" data-d="${d}" data-t="${fmtMin(t)}">${fmtMin(t)}</button>`).join("")}
+        <button class="b min" data-a="sonoOutro" data-d="${d}">Outro</button></div>`;
+    }
+  }
+
+  if (h === "leitura" || h === "estudo") {
+    const un = h === "leitura" ? "páginas" : "min";
+    const passos = h === "leitura" ? [5, 10] : [15, 30];
+    sub = `${prog ? `${fmtHora(c[h].hora)} · ` : "Folga hoje · "}meta ${c[h].meta} ${un}${seqTxt}`;
+    corpo = `<div class="h-valor"><b>${num(v, 0)}</b><span>/ ${c[h].meta} ${un}</span></div>${barra(v / c[h].meta)}
+      <div class="acoes">${passos.map((p) => `<button class="b" data-a="somar" data-h="${h}" data-d="${d}" data-v="${p}">+${p}</button>`).join("")}
+      ${!ok ? `<button class="b cor" data-a="meta" data-h="${h}" data-d="${d}">✓ ${c[h].meta}</button>` : ""}
+      <button class="b min" data-a="editarNum" data-h="${h}" data-d="${d}" aria-label="Editar">✏️</button></div>`;
+  }
+
+  if (h === "agua") {
+    sub = `Meta ${litros(c.agua.meta)} por dia${seqTxt}`;
+    corpo = `<div class="h-valor"><b>${num(v / 1000, 2)}</b><span>/ ${litros(c.agua.meta)}</span></div>${barra(v / c.agua.meta)}
+      <div class="acoes"><button class="b" data-a="somar" data-h="agua" data-d="${d}" data-v="250">+250 ml</button>
+      <button class="b" data-a="somar" data-h="agua" data-d="${d}" data-v="500">+500 ml</button>
+      <button class="b min" data-a="somar" data-h="agua" data-d="${d}" data-v="-250" aria-label="Desfazer">↶</button></div>`;
+  }
+
+  if (h === "exercicio") {
+    const tipos = c.exercicio.tipos?.length ? c.exercicio.tipos : ["Treino"];
+    const feitos = r?.detalhe?.tipos || [];
+    sub = `${prog ? fmtHora(c.exercicio.hora) : "Dia livre (bônus se treinar)"}${seqTxt}`;
+    corpo = `<div class="acoes">${tipos.map((t) => `<button class="b ${feitos.includes(t) ? "on" : ""}" data-a="treino" data-d="${d}" data-t="${esc(t)}">${feitos.includes(t) ? "✓ " : ""}${esc(t)}</button>`).join("")}</div>`;
+  }
+
+  return `<section class="${cls}" style="${corH(h)}">${topoHabito(h, sub, ok)}${corpo}</section>`;
+}
+
+function cartaoPeso(d) {
+  const c = S.cfg, ultimo = S.pesos[S.pesos.length - 1];
+  const deHoje = S.pesos.find((p) => p.data === d);
+  const diaDePesar = semDe(d) === +c.peso.dia;
+  const atrasado = !ultimo || diasEntre(ultimo.data, d) >= 7;
+  if (!deHoje && !diaDePesar && !atrasado) return "";
+  if (d !== hoje() && !deHoje) return "";
+  return `<section class="habito ${deHoje ? "ok" : ""}" style="--c:var(--peso)">
+    <div class="h-topo"><div class="h-ico">⚖️</div><div class="h-nome"><b>Pesagem da semana</b><span>${deHoje ? "Registrado hoje" : "Em jejum, depois do banheiro"}</span></div><div class="h-check">${deHoje ? "✓" : ""}</div></div>
+    ${deHoje ? `<div class="h-valor"><b>${num(deHoje.kg)}</b><span>kg</span></div>` : `<div class="acoes"><button class="b cor" data-a="novoPeso">Registrar peso</button></div>`}
+  </section>`;
+}
+
+function faixaNotificacoes() {
+  if (DEMO) return `<div class="faixa demo"><b>Modo demonstração</b>Dados de exemplo, salvos só neste aparelho.</div>`;
+  const standalone = navigator.standalone || matchMedia("(display-mode: standalone)").matches;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (ios && !standalone) return `<div class="faixa aviso"><b>Adicione o Rumo à Tela de Início</b>No Safari, toque em Compartilhar → "Adicionar à Tela de Início" e abra pelo ícone. Só assim o iPhone mostra os lembretes.</div>`;
+  if (!("Notification" in window) || !("PushManager" in window)) return `<div class="faixa aviso"><b>Este navegador não recebe lembretes</b>Use o Safari no iPhone (iOS 16.4 ou mais novo), pelo ícone da Tela de Início.</div>`;
+  if (Notification.permission === "denied") return `<div class="faixa aviso"><b>Lembretes bloqueados</b>Vá em Ajustes do iPhone → Notificações → Rumo e ative "Permitir Notificações".</div>`;
+  if (Notification.permission !== "granted" || !lerLocal("rumo_push_ok", false))
+    return `<div class="faixa aviso"><b>Ative os lembretes</b>Para receber os avisos nos horários de cada hábito, mesmo com o celular bloqueado.<button class="b prim" data-a="ativarPush">🔔 Ativar lembretes</button></div>`;
+  return "";
+}
+
+/* ============================ Telas ============================ */
+function telaHoje() {
+  const d = S.dia, c = S.cfg, ehHoje = d === hoje();
+  const p = placarDia(d), seq = sequenciaGeral();
+  const atual = pesoAtual(), perdeu = c.peso.inicial - atual, falta = Math.max(0, atual - c.peso.meta);
+  const m = minAgora();
+  const saud = m < 300 ? "Boa noite" : m < 720 ? "Bom dia" : m < 1080 ? "Boa tarde" : "Boa noite";
+  const titulo = ehHoje ? `${saud}, ${esc(c.nome)}` : d === addDias(hoje(), -1) ? "Ontem" : dm(d);
+  const rev = S.revs.find((r) => r.semana < domingoDe(d) && r.semana >= addDias(domingoDe(d), -7) && r.dados?.foco);
+
+  let h = `<header class="topo"><div><h1>${titulo}</h1><div class="sub">${dataLonga(d)}</div></div>
+    <div class="nav-dia"><button class="icone-btn" data-a="diaAnt" aria-label="Dia anterior">‹</button><button class="icone-btn" data-a="diaProx" ${ehHoje ? "disabled" : ""} aria-label="Próximo dia">›</button></div></header>`;
+  if (ehHoje) h += faixaNotificacoes();
+  h += `<section class="heroi"><div class="anel-box">${anel(p.pct)}<div class="num"><div><b>${Math.round(p.pct * 100)}%</b><small>${p.ok} de ${p.prog}</small></div></div></div>
+    <div><h2>${p.prog && p.ok === p.prog ? "Dia completo! 🏆" : ehHoje ? "Seu dia" : "Resumo do dia"}</h2>
+    <div class="sub">${falta > 0 ? `Faltam <b style="color:var(--txt)">${num(falta)} kg</b> para os ${num(c.peso.meta, 0)}` : "Meta de peso alcançada! 🎉"}</div>
+    <div class="chips-linha">${seq ? `<span class="pilula acc">🔥 ${seq} ${seq === 1 ? "dia" : "dias"} no ritmo</span>` : ""}${perdeu > 0 ? `<span class="pilula">−${num(perdeu)} kg</span>` : ""}</div></div></section>`;
+  if (rev) h += `<div class="foco"><span>🎯</span><div><b>Foco da semana</b>${esc(rev.dados.foco)}</div></div>`;
+  h += cartaoPeso(d);
+  for (const k of ORDEM) h += cartaoHabito(k, d);
+  return h;
+}
+
+function graficoPeso(ps, c) {
+  if (ps.length < 2) return `<p class="sub mt">O gráfico aparece a partir da segunda pesagem.</p>`;
+  const W = 320, Hh = 130, pl = 30, pr = 8, pt = 10, pb = 20;
+  const ys = ps.map((p) => p.kg);
+  let lo = Math.floor(Math.min(...ys) - 1), hi = Math.ceil(Math.max(...ys) + 1);
+  const t0 = new Date(ps[0].data).getTime(), t1 = new Date(ps[ps.length - 1].data).getTime() || t0 + 1;
+  const X = (p) => pl + ((new Date(p.data).getTime() - t0) / (t1 - t0 || 1)) * (W - pl - pr);
+  const Y = (kg) => pt + ((hi - kg) / (hi - lo)) * (Hh - pt - pb);
+  const linha = ps.map((p, i) => `${i ? "L" : "M"}${X(p).toFixed(1)},${Y(p.kg).toFixed(1)}`).join("");
+  const area = `${linha}L${X(ps[ps.length - 1]).toFixed(1)},${Hh - pb}L${X(ps[0]).toFixed(1)},${Hh - pb}Z`;
+  const marcas = [hi, Math.round((hi + lo) / 2), lo];
+  return `<svg class="grafico" viewBox="0 0 ${W} ${Hh}">
+    <defs><linearGradient id="gp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--peso)" stop-opacity=".35"/><stop offset="1" stop-color="var(--peso)" stop-opacity="0"/></linearGradient></defs>
+    ${marcas.map((k) => `<line x1="${pl}" x2="${W - pr}" y1="${Y(k)}" y2="${Y(k)}" stroke="var(--line)" stroke-dasharray="2 4"/><text x="${pl - 6}" y="${Y(k) + 3}" text-anchor="end">${k}</text>`).join("")}
+    <path d="${area}" fill="url(#gp)"/>
+    <path d="${linha}" fill="none" stroke="var(--peso)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${ps.map((p) => `<circle cx="${X(p)}" cy="${Y(p.kg)}" r="3" fill="var(--bg)" stroke="var(--peso)" stroke-width="2"/>`).join("")}
+    <text x="${pl}" y="${Hh - 4}">${dm(ps[0].data)}</text><text x="${W - pr}" y="${Hh - 4}" text-anchor="end">${dm(ps[ps.length - 1].data)}</text>
+  </svg>`;
+}
+
+function graficoBarras(h, de, ate) {
+  const c = S.cfg, dias = [];
+  for (let d = de; d <= ate; d = addDias(d, 1)) dias.push(d);
+  const meta = h === "exercicio" ? 1 : c[h].meta;
+  const vals = dias.map((d) => (h === "exercicio" ? (reg(d, h)?.valor ? 1 : 0) : reg(d, h)?.valor || 0));
+  const max = Math.max(meta * 1.3, ...vals);
+  const W = 320, Hh = 56, gap = dias.length > 40 ? 1 : 2, bw = (W - gap * (dias.length - 1)) / dias.length;
+  const yMeta = Hh - (meta / max) * Hh;
+  return `<svg class="grafico" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none" style="height:56px">
+    ${dias.map((d, i) => {
+      const v = vals[i], hh = Math.max(v ? 3 : 2, (v / max) * Hh), ok = feito(d, h), prog = programado(h, d);
+      const cor = ok ? `var(--${h})` : v ? `color-mix(in srgb, var(--${h}) 40%, var(--card2))` : prog ? "rgba(255,95,109,.35)" : "var(--card2)";
+      return `<rect x="${(i * (bw + gap)).toFixed(2)}" y="${(Hh - hh).toFixed(2)}" width="${bw.toFixed(2)}" height="${hh.toFixed(2)}" rx="${Math.min(3, bw / 2)}" fill="${cor}"/>`;
+    }).join("")}
+    ${h !== "exercicio" ? `<line x1="0" x2="${W}" y1="${yMeta}" y2="${yMeta}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}
+  </svg>`;
+}
+
+const corPct = (f) => f === null ? "var(--card2)" : f >= 1 ? "var(--acc)" : f >= 0.8 ? "#9cc443" : f >= 0.5 ? "#5d7a2e" : f > 0 ? "#38452a" : "rgba(255,95,109,.25)";
+
+function telaProgresso() {
+  const c = S.cfg, ate = hoje(), de = addDias(ate, -(S.periodo - 1));
+  let h = `<header class="topo"><div><h1>Progresso</h1><div class="sub">Últimos ${S.periodo} dias</div></div></header>
+    <div class="seg">${[7, 30, 90].map((p) => `<button class="${S.periodo === p ? "on" : ""}" data-a="periodo" data-v="${p}">${p} dias</button>`).join("")}</div>`;
+
+  // Peso
+  const atual = pesoAtual(), ini = +c.peso.inicial, meta = +c.peso.meta;
+  const frac = Math.max(0, Math.min(1, (ini - atual) / (ini - meta)));
+  const tend = tendenciaPeso();
+  const marcos = [];
+  for (let k = Math.floor(ini / 10) * 10; k > meta; k -= 10) if (k < ini) marcos.push(k);
+  const psPeriodo = S.pesos.filter((p) => p.data >= de);
+  h += `<div class="titulo-sec">Rumo aos ${num(meta, 0)} kg</div><section class="cartao">
+    <div class="peso-grande"><b>${num(atual)}</b><span class="sub">kg agora</span></div>
+    <div class="jornada"><i style="width:${frac * 100}%"></i>${marcos.map((k) => `<div class="marco" style="left:${((ini - k) / (ini - meta)) * 100}%"><span>${k}</span></div>`).join("")}</div>
+    <div class="jornada-legenda"><span>${num(ini)} kg</span><span>${Math.round(frac * 100)}% do caminho</span><span>${num(meta)} kg</span></div>
+    <div class="grid2">
+      <div class="mini"><b>${ini - atual >= 0 ? "−" : "+"}${num(Math.abs(ini - atual))} kg</b><span>desde o início</span></div>
+      <div class="mini"><b>${num(Math.max(0, atual - meta))} kg</b><span>para a meta</span></div>
+      <div class="mini"><b>${tend ? `${tend.porSemana <= 0 ? "−" : "+"}${num(Math.abs(tend.porSemana), 2)} kg` : "—"}</b><span>por semana (ritmo)</span></div>
+      <div class="mini"><b style="font-size:16px;line-height:1.5">${tend?.previsao ? mesAno(tend.previsao) : "—"}</b><span>previsão no ritmo atual</span></div>
+    </div>
+    ${graficoPeso(psPeriodo.length >= 2 ? psPeriodo : S.pesos.slice(-12), c)}
+    <div class="acoes"><button class="b prim" data-a="novoPeso">+ Registrar peso</button><button class="b min" data-a="histPeso">Histórico</button></div>
+  </section>`;
+
+  // Consistência
+  let tot = 0, okT = 0;
+  for (let d = de; d <= ate; d = addDias(d, 1)) { const p = placarDia(d); tot += p.prog; okT += p.ok; }
+  const ini7 = addDias(de, -((semDe(de) + 6) % 7));
+  let cal = SEG_A_DOM.map((s) => `<div class="cab">${SEM_LETRA[s]}</div>`).join("");
+  for (let d = ini7; d <= domingoDe(ate); d = addDias(d, 1)) {
+    if (d < de || d > ate) { cal += `<div class="d vazio"></div>`; continue; }
+    const p = placarDia(d);
+    cal += `<div class="d ${d === ate ? "hoje" : ""}" style="background:${corPct(p.prog ? p.pct : null)};${p.pct >= 0.8 ? "color:var(--acc-txt)" : ""}" title="${dm(d)}: ${Math.round(p.pct * 100)}%">${+d.slice(8)}</div>`;
+  }
+  h += `<div class="titulo-sec">Consistência</div><section class="cartao">
+    <div class="peso-grande"><b>${tot ? Math.round((okT / tot) * 100) : 0}%</b><span class="sub">dos hábitos cumpridos</span></div>
+    <div class="cal">${cal}</div>
+    <div class="legenda">menos <i style="background:${corPct(0)}"></i><i style="background:${corPct(0.4)}"></i><i style="background:${corPct(0.6)}"></i><i style="background:${corPct(0.85)}"></i><i style="background:${corPct(1)}"></i> mais</div>
+  </section>`;
+
+  // Por hábito
+  h += `<div class="titulo-sec">Hábito por hábito</div>`;
+  for (const k of ORDEM) {
+    if (!c[k].ativo) continue;
+    let prog = 0, ok = 0, soma = 0, nReg = 0;
+    for (let d = de; d <= ate; d = addDias(d, 1)) {
+      const r = reg(d, k);
+      if (programado(k, d)) { prog++; if (r?.feito) ok++; }
+      if (r) { soma += r.valor; nReg++; }
+    }
+    const pct = prog ? Math.round((ok / prog) * 100) : 0;
+    let extra = "";
+    if (k === "leitura") extra = `<div class="mini"><b>${num(soma, 0)}</b><span>páginas no total</span></div><div class="mini"><b>${num(soma / S.periodo, 1)}</b><span>páginas por dia</span></div>`;
+    if (k === "estudo") extra = `<div class="mini"><b>${horasTxt(soma / 60)}</b><span>estudadas</span></div><div class="mini"><b>${num(prog ? soma / prog : 0, 0)} min</b><span>por dia de estudo</span></div>`;
+    if (k === "agua") extra = `<div class="mini"><b>${litros(nReg ? soma / S.periodo : 0)}</b><span>média por dia</span></div><div class="mini"><b>${ok}</b><span>dias na meta</span></div>`;
+    if (k === "sono") extra = `<div class="mini"><b>${nReg ? horasTxt(soma / nReg) : "—"}</b><span>média por noite</span></div><div class="mini"><b>${ok}</b><span>noites com ${c.sono.meta}h+</span></div>`;
+    if (k === "exercicio") {
+      let bonus = 0;
+      for (let d = de; d <= ate; d = addDias(d, 1)) if (!programado(k, d) && feito(d, k)) bonus++;
+      extra = `<div class="mini"><b>${ok + bonus}</b><span>treinos${bonus ? ` (${bonus} extra)` : ""}</span></div><div class="mini"><b>${num((ok + bonus) / (S.periodo / 7), 1)}</b><span>treinos por semana</span></div>`;
+    }
+    h += `<section class="cartao hab-stat" style="${corH(k)}">
+      <div class="h-topo"><div class="h-ico">${H[k].emoji}</div><div class="h-nome"><b>${H[k].nome}</b><span>🔥 ${sequencia(k)} atual · melhor ${melhorSequencia(k, de, ate)}</span></div><div class="pct">${pct}%</div></div>
+      ${graficoBarras(k, de, ate)}
+      <div class="grid2">${extra}</div></section>`;
+  }
+  return h;
+}
+
+function resumoSemana(dom) {
+  const seg = addDias(dom, -6), ate = hoje() < dom ? hoje() : dom;
+  let prog = 0, ok = 0;
+  for (let d = seg; d <= ate; d = addDias(d, 1)) { const p = placarDia(d); prog += p.prog; ok += p.ok; }
+  const ps = S.pesos.filter((p) => p.data >= seg && p.data <= dom);
+  const antes = [...S.pesos].reverse().find((p) => p.data < seg);
+  const ultimo = ps[ps.length - 1];
+  return { pct: prog ? Math.round((ok / prog) * 100) : null, ok, prog, pesoDif: ultimo && antes ? ultimo.kg - antes.kg : null, peso: ultimo?.kg };
+}
+
+function telaSemana() {
+  const c = S.cfg, dom = S.semana, seg = addDias(dom, -6), hj = hoje(), atual = dom === domingoDe(hj);
+  const r = resumoSemana(dom), ant = resumoSemana(addDias(dom, -7));
+  const rev = S.revs.find((x) => x.semana === dom);
+  let h = `<header class="topo"><div><h1>${atual ? "Esta semana" : "Semana"}</h1><div class="sub">${dm(seg)} a ${dm(dom)}</div></div>
+    <div class="nav-dia"><button class="icone-btn" data-a="semAnt">‹</button><button class="icone-btn" data-a="semProx" ${atual ? "disabled" : ""}>›</button></div></header>`;
+
+  let t = `<table class="tabela-sem"><tr><th></th>${SEG_A_DOM.map((s, i) => `<th>${SEM_LETRA[s]}<br><span style="font-weight:500">${+addDias(seg, i).slice(8)}</span></th>`).join("")}</tr>`;
+  for (const k of ORDEM) {
+    if (!c[k].ativo) continue;
+    t += `<tr style="${corH(k)}"><th class="hab">${H[k].emoji}</th>`;
+    for (let i = 0; i < 7; i++) {
+      const d = addDias(seg, i), f = feito(d, k), p = programado(k, d);
+      const cls = d > hj ? "futuro" : f ? "ok" : !p ? "livre" : d === hj ? "" : "nao";
+      t += `<td><div class="cel ${cls}">${f ? "✓" : cls === "nao" ? "✕" : ""}</div></td>`;
+    }
+    t += `</tr>`;
+  }
+  t += `</table>`;
+  const dif = r.pct !== null && ant.pct !== null ? r.pct - ant.pct : null;
+  h += `<section class="cartao">${t}
+    <div class="comparativo">
+      <div class="mini"><b>${r.pct ?? "—"}%</b><span>cumprido${dif !== null ? ` · <span class="${dif >= 0 ? "sobe" : "desce"}">${dif >= 0 ? "▲" : "▼"} ${Math.abs(dif)} pts</span>` : ""}</span></div>
+      <div class="mini"><b>${r.pesoDif !== null ? `${r.pesoDif <= 0 ? "−" : "+"}${num(Math.abs(r.pesoDif))} kg` : r.peso ? `${num(r.peso)} kg` : "—"}</b><span>${r.pesoDif !== null ? "peso na semana" : "pesagem"}</span></div>
+    </div></section>`;
+
+  h += `<div class="titulo-sec">Revisão de domingo</div>`;
+  if (rev && !S.editandoRev) {
+    const dd = rev.dados || {};
+    h += `<section class="cartao">
+      <div style="font-size:34px">${NOTAS[(dd.nota || 3) - 1]}</div>
+      ${dd.funcionou ? `<div class="rev-item"><div class="rot">O que funcionou</div><p>${esc(dd.funcionou)}</p></div>` : ""}
+      ${dd.atrapalhou ? `<div class="rev-item"><div class="rot">O que atrapalhou</div><p>${esc(dd.atrapalhou)}</p></div>` : ""}
+      ${dd.foco ? `<div class="rev-item"><div class="rot">🎯 Foco da próxima semana</div><p>${esc(dd.foco)}</p></div>` : ""}
+      <button class="b mt largo" data-a="editarRev">✏️ Editar revisão</button></section>`;
+  } else {
+    const dd = rev?.dados || {};
+    const ehDomingo = semDe(hj) === 0;
+    h += `<form class="cartao" data-form="revisao">
+      ${atual && !ehDomingo ? `<p class="sub" style="margin-top:0">O ideal é fazer no domingo, às ${fmtHora(c.revisao.hora)}. Você recebe um lembrete.</p>` : ""}
+      <label class="campo"><span>Como foi a semana?</span><div class="notas">${NOTAS.map((e, i) => `<label><input type="radio" name="nota" value="${i + 1}" ${(dd.nota || 0) === i + 1 ? "checked" : ""}><span>${e}</span></label>`).join("")}</div></label>
+      <label class="campo"><span>O que funcionou?</span><textarea name="funcionou" placeholder="Ex.: treinar logo depois do trabalho">${esc(dd.funcionou)}</textarea></label>
+      <label class="campo"><span>O que atrapalhou?</span><textarea name="atrapalhou" placeholder="Ex.: dormi tarde no fim de semana">${esc(dd.atrapalhou)}</textarea></label>
+      <label class="campo"><span>🎯 Foco da próxima semana</span><input type="text" name="foco" value="${esc(dd.foco)}" placeholder="Uma coisa só, ex.: deitar até 23h"></label>
+      <div class="titulo-sec" style="margin:18px 0 10px">Metas da próxima semana</div>
+      <div class="linha"><label class="campo"><span>📖 Páginas/dia</span><input type="number" name="leitura.meta" min="1" value="${c.leitura.meta}"></label>
+      <label class="campo"><span>🎓 Estudo (min)</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label></div>
+      <div class="linha"><label class="campo"><span>💧 Água (litros)</span><input type="number" name="agua.litros" min="0.5" step="0.25" value="${c.agua.meta / 1000}"></label>
+      <label class="campo"><span>🌙 Sono (horas)</span><input type="number" name="sono.meta" min="5" max="10" step="0.5" value="${c.sono.meta}"></label></div>
+      <label class="campo" style="--c:var(--exercicio)"><span>🏋️ Dias de treino</span>${seletorDias("exercicio.dias", c.exercicio.dias)}</label>
+      <button class="b prim largo mt" type="submit">Salvar revisão</button>
+      ${rev ? `<button class="b largo mt" type="button" data-a="cancelarRev">Cancelar</button>` : ""}
+    </form>`;
+  }
+
+  const antigas = S.revs.filter((x) => x.semana !== dom).slice(0, 8);
+  if (antigas.length) {
+    h += `<div class="titulo-sec">Revisões anteriores</div><section class="cartao">`;
+    for (const x of antigas) {
+      const dd = x.dados || {};
+      h += `<div class="rev-item"><div class="rot">${dm(addDias(x.semana, -6))} a ${dm(x.semana)} · ${NOTAS[(dd.nota || 3) - 1]}${dd.pct != null ? ` · ${dd.pct}%` : ""}</div>${dd.foco ? `<p>🎯 ${esc(dd.foco)}</p>` : ""}</div>`;
+    }
+    h += `</section>`;
+  }
+  return h;
+}
+
+function seletorDias(nome, sel) {
+  return `<div class="dias">${SEG_A_DOM.map((s) => `<label><input type="checkbox" name="${nome}" value="${s}" ${(sel || []).includes(s) ? "checked" : ""}><span>${SEM_LETRA[s]}</span></label>`).join("")}</div>`;
+}
+const chave = (nome, on, rot = "Ativo") => `<label class="campo chave"><span style="margin:0">${rot}</span><input type="checkbox" name="${nome}" ${on ? "checked" : ""}></label>`;
+
+function telaAjustes() {
+  const c = S.cfg;
+  const bloco = (k, conteudo) => `<details class="aj" style="${corH(k)}"><summary><span class="h-ico">${H[k].emoji}</span>${H[k].nome}</summary><div class="corpo">${conteudo}</div></details>`;
+  let h = `<header class="topo"><div><h1>Ajustes</h1><div class="sub">Metas, horários e lembretes</div></div></header>`;
+  h += faixaNotificacoes();
+  if (!DEMO && typeof Notification !== "undefined" && Notification.permission === "granted" && lerLocal("rumo_push_ok", false))
+    h += `<button class="b largo" data-a="testarPush" style="margin-bottom:14px">🔔 Enviar notificação de teste</button>`;
+  h += `<form data-form="ajustes">
+    <section class="cartao"><label class="campo" style="margin:0"><span>Seu nome</span><input type="text" name="nome" value="${esc(c.nome)}"></label></section>
+    ${bloco("sono", `${chave("sono.ativo", c.sono.ativo)}
+      <div class="linha"><label class="campo"><span>Acordar às</span><input type="time" name="sono.acordar" value="${c.sono.acordar}"></label>
+      <label class="campo"><span>Meta (horas)</span><input type="number" name="sono.meta" min="5" max="10" step="0.5" value="${c.sono.meta}"></label></div>
+      <label class="campo"><span>Avisar para desacelerar (min antes de deitar)</span><input type="number" name="sono.aviso_antes_min" min="0" step="5" value="${c.sono.aviso_antes_min}"></label>
+      <p class="sub">Com essa meta, o horário de deitar é ${fmtMin(hm(c.sono.acordar) - c.sono.meta * 60)}.</p>`)}
+    ${bloco("leitura", `${chave("leitura.ativo", c.leitura.ativo)}
+      <div class="linha"><label class="campo"><span>Páginas por dia</span><input type="number" name="leitura.meta" min="1" value="${c.leitura.meta}"></label>
+      <label class="campo"><span>Lembrete</span><input type="time" name="leitura.hora" value="${c.leitura.hora}"></label></div>
+      <label class="campo"><span>Dias</span>${seletorDias("leitura.dias", c.leitura.dias)}</label>`)}
+    ${bloco("agua", `${chave("agua.ativo", c.agua.ativo)}
+      <label class="campo"><span>Meta (litros por dia)</span><input type="number" name="agua.litros" min="0.5" step="0.25" value="${c.agua.meta / 1000}"></label>
+      <div class="linha"><label class="campo"><span>Das</span><input type="time" name="agua.inicio" value="${c.agua.inicio}"></label>
+      <label class="campo"><span>Até</span><input type="time" name="agua.fim" value="${c.agua.fim}"></label></div>
+      <label class="campo"><span>Verificar a cada (min)</span><input type="number" name="agua.intervalo_min" min="30" step="15" value="${c.agua.intervalo_min}"></label>
+      <p class="sub">O lembrete só chega se você estiver abaixo do ritmo para bater a meta.</p>`)}
+    ${bloco("exercicio", `${chave("exercicio.ativo", c.exercicio.ativo)}
+      <label class="campo"><span>Lembrete</span><input type="time" name="exercicio.hora" value="${c.exercicio.hora}"></label>
+      <label class="campo"><span>Dias de treino</span>${seletorDias("exercicio.dias", c.exercicio.dias)}</label>
+      <label class="campo"><span>Tipos (separe por vírgula)</span><input type="text" name="exercicio.tipos" value="${esc((c.exercicio.tipos || []).join(", "))}"></label>`)}
+    ${bloco("estudo", `${chave("estudo.ativo", c.estudo.ativo)}
+      <div class="linha"><label class="campo"><span>Minutos por dia</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label>
+      <label class="campo"><span>Lembrete</span><input type="time" name="estudo.hora" value="${c.estudo.hora}"></label></div>
+      <label class="campo"><span>Dias</span>${seletorDias("estudo.dias", c.estudo.dias)}</label>`)}
+    <details class="aj" style="--c:var(--peso)"><summary><span class="h-ico">⚖️</span>Peso e revisão</summary><div class="corpo">
+      <div class="linha"><label class="campo"><span>Peso inicial (kg)</span><input type="number" name="peso.inicial" step="0.1" value="${c.peso.inicial}"></label>
+      <label class="campo"><span>Meta (kg)</span><input type="number" name="peso.meta" step="0.1" value="${c.peso.meta}"></label></div>
+      <div class="linha"><label class="campo"><span>Dia da pesagem</span><select name="peso.dia">${SEG_A_DOM.map((s) => `<option value="${s}" ${+c.peso.dia === s ? "selected" : ""}>${SEM_NOME[s]}</option>`).join("")}</select></label>
+      <label class="campo"><span>Horário</span><input type="time" name="peso.hora" value="${c.peso.hora}"></label></div>
+      <div class="linha"><label class="campo"><span>Dia da revisão</span><select name="revisao.dia">${SEG_A_DOM.map((s) => `<option value="${s}" ${+c.revisao.dia === s ? "selected" : ""}>${SEM_NOME[s]}</option>`).join("")}</select></label>
+      <label class="campo"><span>Horário</span><input type="time" name="revisao.hora" value="${c.revisao.hora}"></label></div>
+      <label class="campo"><span>Fechamento do dia (aviso do que falta)</span><input type="time" name="fechamento" value="${c.fechamento}"></label>
+    </div></details>
+    <button class="b prim largo mt" type="submit">Salvar ajustes</button>
+  </form>
+  ${DEMO ? `<button class="b largo mt" data-a="resetDemo">Recomeçar demonstração</button>` : `<button class="b perigo largo mt" data-a="sair">Sair da conta</button>`}
+  <p class="sub centro mt">Rumo · feito para ${esc(c.nome)}</p>`;
+  return h;
+}
+
+function telaLogin(msg = "") {
+  return `<div class="login"><div class="logo">Rumo</div><p class="sub" style="margin:0 0 24px">Seus hábitos, um dia de cada vez.</p>
+    <form data-form="login">
+      ${msg ? `<div class="erro">${esc(msg)}</div>` : ""}
+      <label class="campo"><span>E-mail</span><input type="email" name="email" autocomplete="username" required></label>
+      <label class="campo"><span>Senha</span><input type="password" name="senha" autocomplete="current-password" required></label>
+      <button class="b prim largo" type="submit">Entrar</button>
+    </form></div>`;
+}
+
+/* ============================ Render ============================ */
+function render() {
+  if (!S.pronto) return;
+  const telas = { hoje: telaHoje, progresso: telaProgresso, semana: telaSemana, ajustes: telaAjustes };
+  const abas = [["hoje", "☀️", "Hoje"], ["progresso", "📈", "Progresso"], ["semana", "🗓️", "Semana"], ["ajustes", "⚙️", "Ajustes"]];
+  const abertos = [...document.querySelectorAll("details.aj[open]")].map((d) => d.querySelector("summary").textContent);
+  $("#app").innerHTML = telas[S.aba]() +
+    `<nav class="abas"><div class="in">${abas.map(([k, i, n]) => `<button class="${S.aba === k ? "on" : ""}" data-a="aba" data-v="${k}"><span class="i">${i}</span>${n}</button>`).join("")}</div></nav>`;
+  document.querySelectorAll("details.aj").forEach((d) => { if (abertos.includes(d.querySelector("summary").textContent)) d.open = true; });
+}
+
+function abrirModal(html) {
+  const m = $("#modal");
+  m.innerHTML = `<div class="folha"><div class="pega"></div>${html}</div>`;
+  m.hidden = false;
+  const f = m.querySelector("input:not([type=hidden])");
+  if (f) setTimeout(() => f.focus(), 120);
+}
+function fecharModal() { $("#modal").hidden = true; $("#modal").innerHTML = ""; }
+
+/* ============================ Ações ============================ */
+const ACOES = {
+  aba(el) { S.aba = el.dataset.v; S.editandoRev = false; if (S.aba === "hoje") S.dia = hoje(); render(); scrollTo(0, 0); },
+  diaAnt() { S.dia = addDias(S.dia, -1); render(); },
+  diaProx() { if (S.dia < hoje()) { S.dia = addDias(S.dia, 1); render(); } },
+  semAnt() { S.semana = addDias(S.semana, -7); S.editandoRev = false; render(); },
+  semProx() { if (S.semana < domingoDe(hoje())) { S.semana = addDias(S.semana, 7); S.editandoRev = false; render(); } },
+  periodo(el) { S.periodo = +el.dataset.v; render(); },
+  somar(el) {
+    const { h, d } = el.dataset, r = reg(d, h);
+    salvarReg(h, d, (r?.valor || 0) + +el.dataset.v, r?.detalhe || {});
+  },
+  meta(el) { const { h, d } = el.dataset; salvarReg(h, d, Math.max(S.cfg[h].meta, reg(d, h)?.valor || 0), reg(d, h)?.detalhe || {}); },
+  editarNum(el) {
+    const { h, d } = el.dataset, un = h === "leitura" ? "páginas" : "minutos";
+    abrirModal(`<h3>${H[h].emoji} ${H[h].nome} · ${dm(d)}</h3><form data-form="num" data-h="${h}" data-d="${d}">
+      <label class="campo"><span>Quantas ${un}?</span><input type="number" name="v" min="0" inputmode="numeric" value="${reg(d, h)?.valor || ""}"></label>
+      <button class="b prim largo" type="submit">Salvar</button></form>`);
+  },
+  sono(el) {
+    const { d, t } = el.dataset;
+    const horas = (((hm(S.cfg.sono.acordar) - hm(t)) % 1440) + 1440) % 1440 / 60;
+    salvarReg("sono", d, horas, { deitou: t, acordou: S.cfg.sono.acordar });
+  },
+  sonoOutro(el) {
+    const d = el.dataset.d, r = reg(d, "sono");
+    abrirModal(`<h3>🌙 Noite de ${dm(addDias(d, -1))} para ${dm(d)}</h3><form data-form="sono" data-d="${d}">
+      <div class="linha"><label class="campo"><span>Dormi às</span><input type="time" name="deitou" value="${r?.detalhe?.deitou || fmtMin(hm(S.cfg.sono.acordar) - S.cfg.sono.meta * 60)}" required></label>
+      <label class="campo"><span>Acordei às</span><input type="time" name="acordou" value="${r?.detalhe?.acordou || S.cfg.sono.acordar}" required></label></div>
+      <button class="b prim largo" type="submit">Salvar</button>
+      ${r ? `<button class="b perigo largo mt" type="button" data-a="apagarSono" data-d="${d}">Apagar registro</button>` : ""}</form>`);
+  },
+  apagarSono(el) { fecharModal(); apagarReg("sono", el.dataset.d); },
+  treino(el) {
+    const { d, t } = el.dataset, r = reg(d, "exercicio");
+    let tipos = [...(r?.detalhe?.tipos || [])];
+    tipos = tipos.includes(t) ? tipos.filter((x) => x !== t) : [...tipos, t];
+    if (!tipos.length) return apagarReg("exercicio", d);
+    salvarReg("exercicio", d, tipos.length, { tipos });
+  },
+  novoPeso() {
+    const ult = S.pesos[S.pesos.length - 1];
+    abrirModal(`<h3>⚖️ Registrar peso</h3><form data-form="peso">
+      <label class="campo"><span>Peso (kg)</span><input type="text" name="kg" inputmode="decimal" autocomplete="off" placeholder="${ult ? num(ult.kg) : S.cfg.peso.inicial}" required></label>
+      <label class="campo"><span>Data</span><input type="date" name="data" value="${hoje()}" max="${hoje()}" required></label>
+      <button class="b prim largo" type="submit">Salvar</button></form>`);
+  },
+  histPeso() {
+    const lista = [...S.pesos].reverse();
+    abrirModal(`<h3>Histórico de peso</h3>${lista.length ? `<ul class="lista-peso">${lista.map((p, i) => {
+      const prox = lista[i + 1], dif = prox ? p.kg - prox.kg : null;
+      return `<li><span><b>${num(p.kg)} kg</b> <span class="sub">${dm(p.data)}${dif !== null ? ` · <span class="${dif <= 0 ? "sobe" : "desce"}">${dif <= 0 ? "−" : "+"}${num(Math.abs(dif))}</span>` : ""}</span></span><button class="b min perigo" data-a="apagarPeso" data-id="${p.id}" aria-label="Apagar">✕</button></li>`;
+    }).join("")}</ul>` : `<p class="sub">Nenhuma pesagem ainda.</p>`}`);
+  },
+  async apagarPeso(el) {
+    const id = +el.dataset.id;
+    if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Apagar?"; return; }
+    try { await S.api.apagarPeso(id); S.pesos = S.pesos.filter((p) => +p.id !== id); render(); ACOES.histPeso(); toast("Pesagem apagada"); } catch (e) { erro(e); }
+  },
+  editarRev() { S.editandoRev = true; render(); },
+  cancelarRev() { S.editandoRev = false; render(); },
+  async ativarPush() {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { render(); return toast("Notificações não permitidas"); }
+      const reg_ = await navigator.serviceWorker.ready;
+      let sub = await reg_.pushManager.getSubscription();
+      if (!sub) sub = await reg_.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(CONFIG.VAPID_PUBLIC_KEY) });
+      await S.api.salvarSub(sub);
+      gravarLocal("rumo_push_ok", true);
+      render();
+      toast("🔔 Lembretes ativados!");
+    } catch (e) { erro(e); }
+  },
+  async testarPush() {
+    try {
+      const r = await navigator.serviceWorker.ready;
+      const sub = await r.pushManager.getSubscription();
+      if (!sub) { gravarLocal("rumo_push_ok", false); render(); return toast("Ative os lembretes de novo"); }
+      await S.api.salvarSub(sub);
+      await S.api.teste();
+      toast("Enviado! Chega em até 1 minuto.");
+    } catch (e) { erro(e); }
+  },
+  async sair() { await S.sb.auth.signOut(); localStorage.removeItem("rumo_push_ok"); location.reload(); },
+  resetDemo() { Object.keys(localStorage).filter((k) => k.startsWith("rumo_demo_")).forEach((k) => localStorage.removeItem(k)); location.reload(); },
+};
+
+const FORMS = {
+  async login(f, fd) {
+    const b = f.querySelector("button"); b.disabled = true; b.textContent = "Entrando…";
+    const { error } = await S.sb.auth.signInWithPassword({ email: fd.get("email").trim(), password: fd.get("senha") });
+    if (error) { $("#app").innerHTML = telaLogin("E-mail ou senha incorretos."); return; }
+    iniciarSessao();
+  },
+  num(f, fd) { fecharModal(); salvarReg(f.dataset.h, f.dataset.d, +fd.get("v") || 0, reg(f.dataset.d, f.dataset.h)?.detalhe || {}); },
+  sono(f, fd) {
+    const de = hm(fd.get("deitou")), ate = hm(fd.get("acordou"));
+    const horas = (((ate - de) % 1440) + 1440) % 1440 / 60;
+    fecharModal();
+    salvarReg("sono", f.dataset.d, horas, { deitou: fd.get("deitou"), acordou: fd.get("acordou") });
+  },
+  async peso(f, fd) {
+    const kg = Math.round(parseFloat(String(fd.get("kg")).replace(",", ".")) * 10) / 10, data = fd.get("data");
+    if (!(kg >= 30 && kg <= 300)) return toast("Peso inválido");
+    try {
+      await S.api.salvarPeso(data, kg);
+      S.pesos = (await S.api.pesos()).map((p) => ({ ...p, kg: +p.kg }));
+      fecharModal(); render();
+      const ant = S.pesos.filter((p) => p.data < data).pop();
+      toast(ant && kg < ant.kg ? `⚖️ −${num(ant.kg - kg)} kg! Bora!` : "⚖️ Peso registrado");
+    } catch (e) { erro(e); }
+  },
+  async revisao(f, fd) {
+    const c = structuredClone(S.cfg);
+    aplicarCampos(c, f, fd, ["leitura.meta", "estudo.meta", "agua.litros", "sono.meta", "exercicio.dias"]);
+    const r = resumoSemana(S.semana);
+    const dados = { nota: +fd.get("nota") || 3, funcionou: fd.get("funcionou").trim(), atrapalhou: fd.get("atrapalhou").trim(), foco: fd.get("foco").trim(), pct: r.pct,
+      metas: { leitura: c.leitura.meta, estudo: c.estudo.meta, agua: c.agua.meta, sono: c.sono.meta, treino_dias: c.exercicio.dias.length } };
+    try {
+      await S.api.salvarRev(S.semana, dados);
+      await S.api.salvarCfg(c);
+      S.cfg = mesclarCfg(c);
+      S.revs = await S.api.revs();
+      S.editandoRev = false;
+      render(); scrollTo(0, 0);
+      toast("📋 Revisão salva. Boa semana!");
+    } catch (e) { erro(e); }
+  },
+  async ajustes(f, fd) {
+    const c = structuredClone(S.cfg);
+    c.nome = fd.get("nome").trim() || "Você";
+    const campos = [...new Set([...f.elements].map((e) => e.name).filter((n) => n && n !== "nome"))];
+    aplicarCampos(c, f, fd, campos);
+    try { await S.api.salvarCfg(c); S.cfg = mesclarCfg(c); render(); toast("✅ Ajustes salvos"); } catch (e) { erro(e); }
+  },
+};
+
+// Lê campos "grupo.chave" do formulário para dentro da configuração
+function aplicarCampos(c, f, fd, nomes) {
+  for (const n of nomes) {
+    const [g, k] = n.includes(".") ? n.split(".") : [null, n];
+    const el = f.elements[n];
+    const tipo = el instanceof RadioNodeList ? el[0].type : el.type;
+    let v;
+    if (k === "dias") v = fd.getAll(n).map(Number).sort();
+    else if (tipo === "checkbox") v = el.checked;
+    else if (k === "litros") { if (g) c[g].meta = Math.round(parseFloat(fd.get(n)) * 1000) || c[g].meta; continue; }
+    else if (k === "tipos") v = String(fd.get(n)).split(",").map((s) => s.trim()).filter(Boolean);
+    else if (tipo === "number" || tipo === "select-one") v = parseFloat(String(fd.get(n)).replace(",", "."));
+    else v = fd.get(n);
+    if (typeof v === "number" && isNaN(v)) continue;
+    if (g) c[g] = { ...c[g], [k]: v }; else c[k] = v;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.id === "modal") return fecharModal();
+  const el = e.target.closest("[data-a]");
+  if (!el || el.disabled) return;
+  const fn = ACOES[el.dataset.a];
+  if (fn) { e.preventDefault(); fn(el); }
+});
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-form]");
+  if (!f) return;
+  e.preventDefault();
+  FORMS[f.dataset.form]?.(f, new FormData(f));
+});
+
+/* ============================ Início ============================ */
+async function iniciarSessao() {
+  try {
+    if (!DEMO) {
+      const { data } = await S.sb.auth.getUser();
+      S.api = apiSupabase(S.sb, data.user.id);
+    }
+    await carregar();
+    render();
+  } catch (e) {
+    console.error(e);
+    $("#app").innerHTML = `<div class="login"><div class="logo">Rumo</div><p>Não foi possível carregar seus dados.</p><p class="sub">${esc(e?.message || e)}</p><button class="b prim largo" onclick="location.reload()">Tentar de novo</button></div>`;
+  }
+}
+
+async function iniciar() {
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  if (DEMO) { S.api = apiLocal(); return iniciarSessao(); }
+  const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
+  S.sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "rumo-auth" } });
+  const { data } = await S.sb.auth.getSession();
+  if (!data.session) { $("#app").innerHTML = telaLogin(); return; }
+  iniciarSessao();
+}
+
+// Ao voltar para o app: atualiza os dados e, se virou o dia, volta para hoje
+let ultimaVisita = hoje();
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || !S.pronto || !$("#modal").hidden) return;
+  if (ultimaVisita !== hoje()) { ultimaVisita = hoje(); S.dia = hoje(); S.semana = domingoDe(hoje()); }
+  try { await carregar(); render(); } catch {}
+});
+
+iniciar();
