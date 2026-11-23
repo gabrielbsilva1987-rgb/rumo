@@ -2,9 +2,10 @@
 //  Função "saude" (Supabase → Edge Functions) — app Rumo
 //  Recebe do app Atalhos do iPhone os dados do app Saúde:
 //    POST .../functions/v1/saude?chave=SUA_CHAVE
-//    corpo JSON: { "calorias": 520, "passos": 8432, "treinos": 1 }
-//  Grava as calorias ativas e os passos do dia e, se houver treino
-//  registrado (Apple Watch ou outros apps), marca o Treino como feito.
+//    corpo JSON: { "calorias": 520, "passos": 8432, "minutos": 45 }
+//  Grava calorias ativas, passos e minutos de exercício do dia. Se os
+//  minutos passarem do limite (padrão 20) ou vier "treinos" > 0,
+//  marca o Treino do dia como feito.
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -44,7 +45,8 @@ Deno.serve(async (req) => {
   const uid = conta.user_id, saude = conta.dados?.saude || {};
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(corpo.data || "") ? corpo.data : hojeSP();
   const em = new Date().toISOString();
-  const calorias = numero(corpo.calorias), passos = numero(corpo.passos), treinos = numero(corpo.treinos);
+  const calorias = numero(corpo.calorias), passos = numero(corpo.passos), treinos = numero(corpo.treinos), minutos = numero(corpo.minutos);
+  const limiar = +saude.min_treino || 20;
   const linhas: any[] = [];
   const partes: string[] = [];
 
@@ -58,23 +60,27 @@ Deno.serve(async (req) => {
     linhas.push({ user_id: uid, data: dia, habito: "passos", valor: Math.round(passos), feito: meta ? passos >= meta : true, detalhe: { em, fonte: "saude" }, atualizado: em });
     partes.push(`${fmt(passos)} passos`);
   }
+  if (minutos !== null && minutos >= 0) {
+    linhas.push({ user_id: uid, data: dia, habito: "minutos", valor: Math.round(minutos), feito: minutos >= limiar, detalhe: { em, fonte: "saude" }, atualizado: em });
+    partes.push(`${fmt(minutos)} min de exercício`);
+  }
   if (linhas.length) {
     const { error } = await sb.from("h_registros").upsert(linhas);
     if (error) return texto("❌ Erro ao salvar: " + error.message, 500);
   }
 
   // Treinos registrados no Saúde marcam o Treino do dia
-  if (treinos !== null) {
-    const n = Math.max(0, Math.round(treinos));
+  if (treinos !== null || minutos !== null) {
+    const n = Math.max(0, Math.round(treinos ?? 0), minutos !== null && minutos >= limiar ? 1 : 0);
     const { data: atual } = await sb.from("h_registros").select("valor,detalhe").eq("user_id", uid).eq("data", dia).eq("habito", "exercicio").maybeSingle();
     const tipos: string[] = atual?.detalhe?.tipos || [];
     if (n > 0) {
-      await sb.from("h_registros").upsert({ user_id: uid, data: dia, habito: "exercicio", valor: Math.max(tipos.length, 1), feito: true, detalhe: { ...(atual?.detalhe || {}), tipos, auto: n }, atualizado: em });
-      partes.push(`${n} ${n === 1 ? "treino" : "treinos"} ✓`);
+      await sb.from("h_registros").upsert({ user_id: uid, data: dia, habito: "exercicio", valor: Math.max(tipos.length, 1), feito: true, detalhe: { ...(atual?.detalhe || {}), tipos, auto: n, ...(minutos !== null ? { auto_min: Math.round(minutos) } : {}) }, atualizado: em });
+      partes.push("Treino ✓");
     } else if (atual?.detalhe?.auto) {
       if (tipos.length) await sb.from("h_registros").update({ valor: tipos.length, detalhe: { tipos }, atualizado: em }).eq("user_id", uid).eq("data", dia).eq("habito", "exercicio");
       else await sb.from("h_registros").delete().eq("user_id", uid).eq("data", dia).eq("habito", "exercicio");
-    } else partes.push("nenhum treino ainda");
+    } else partes.push(minutos !== null ? `treino conta a partir de ${limiar} min` : "nenhum treino ainda");
   }
 
   if (!partes.length) return texto("⚠️ Nada recebido. Confira os campos calorias, passos e treinos no atalho.", 400);

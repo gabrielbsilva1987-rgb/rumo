@@ -270,3 +270,8 @@ details.aj .h-ico { width: 36px; height: 36px; font-size: 18px; border-radius: 1
 .passos { padding-left: 20px; margin: 16px 0; font-size: 14px; line-height: 1.5; }
 .passos li { margin-bottom: 10px; }
 .passos code { background: var(--card2); padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.habito.saude .grid3 .mini { padding: 10px; }
+.habito.saude .grid3 .mini span { font-size: 11px; }
+.habito.saude .grid3 .mini b { font-size: 19px; }
+.habito.saude .grid3 .mini small { font-size: 11px; display: block; }
