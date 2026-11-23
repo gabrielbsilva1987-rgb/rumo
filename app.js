@@ -492,7 +492,7 @@ function cartaoSaude(d) {
   return `<section class="habito saude" style="--c:#ff9f43">
     <div class="h-topo"><div class="h-ico">⌚</div><div class="h-nome"><b>Atividade</b><span>${em ? `Do app Saúde · atualizado às ${new Date(em).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" })}` : "Do app Saúde · ainda sem dados hoje"}</span></div></div>
     <div class="grid3">${item("calorias", cal)}${item("passos", pas)}${item("minutos", min)}</div>
-    ${!em && d === hoje() ? `<p class="sub" style="margin:10px 0 0">Os dados chegam quando o atalho "Rumo Saúde" roda. Você pode rodá-lo agora pelo app Atalhos.</p>` : ""}
+    ${d === hoje() ? `<a class="b largo mt" style="height:42px;font-size:14px;text-decoration:none" href="shortcuts://run-shortcut?name=${encodeURIComponent("Rumo Saúde")}">🔄 Atualizar agora</a>` : ""}
   </section>`;
 }
 
