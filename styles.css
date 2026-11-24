@@ -278,3 +278,34 @@ details.aj .h-ico { width: 36px; height: 36px; font-size: 18px; border-radius: 1
 .habito.saude .grid3 .mini span { font-size: 11px; }
 .habito.saude .grid3 .mini b { font-size: 19px; }
 .habito.saude .grid3 .mini small { font-size: 11px; display: block; }
+
+/* ---------- alimentação ---------- */
+.habito.comida.passou .barra i { background: var(--ruim); }
+.prot { margin-top: 10px; font-size: 13px; color: var(--mut); }
+.prot .barra { margin-top: 5px; }
+.saldo { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: var(--card2); font-size: 13px; }
+.saldo span { color: var(--mut); }
+.saldo.bom b { color: var(--acc); }
+.saldo.ruim b { color: var(--ruim); }
+.lista-ref { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.ref { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px; border-radius: 14px; background: var(--card2); }
+.ref img, .ref-ico { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; flex: none; display: grid; place-items: center; font-size: 20px; background: rgba(255,255,255,.05); }
+.ref-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ref-txt b { font-size: 14px; }
+.ref-txt span { font-size: 13px; color: var(--mut); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ref-kcal { font-weight: 800; font-size: 15px; }
+.tipos-ref span { height: 52px; font-size: 12px; line-height: 1.3; }
+.foto-ref { display: flex; align-items: center; gap: 12px; }
+.foto-ref .b { flex: 1; }
+#fotoPrev img { width: 72px; height: 72px; border-radius: 14px; object-fit: cover; display: block; }
+.estim { margin-top: 14px; background: var(--card); border-radius: 16px; padding: 10px 12px; }
+.item-ref { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.item-ref .nome { flex: 1; min-width: 0; }
+.item-ref .nome input { height: 34px; padding: 0 8px; font-size: 15px; background: transparent; border-color: transparent; }
+.item-ref .nome input:focus { border-color: var(--acc); }
+.item-ref small { display: block; font-size: 11px; color: var(--mut); padding-left: 8px; }
+.item-ref input[data-campo=kcal] { width: 74px; height: 38px; padding: 0 8px; text-align: right; flex: none; }
+.item-ref .un { font-size: 12px; color: var(--mut); }
+.item-ref .x { width: 30px; height: 30px; border-radius: 50%; color: var(--mut); flex: none; }
+.total-ref { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; }
+.total-ref b { font-size: 22px; color: #ff7eb3; }

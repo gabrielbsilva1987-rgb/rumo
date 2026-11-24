@@ -30,10 +30,11 @@ const PADRAO: any = {
   revisao: { dia: 0, hora: "17:00" },
   fechamento: "21:30",
   extras: [],
+  alimentacao: { ativo: true, meta_kcal: 0 },
 };
 function mesclar(d: any) {
   const c: any = { ...PADRAO, ...(d || {}) };
-  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao"]) c[k] = { ...PADRAO[k], ...((d || {})[k] || {}) };
+  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao", "alimentacao"]) c[k] = { ...PADRAO[k], ...((d || {})[k] || {}) };
   return c;
 }
 
@@ -181,6 +182,10 @@ Deno.serve(async (req) => {
       if (c.exercicio.ativo && na(c.exercicio.dias, sem) && !feito("exercicio")) falta.push("treino");
       if (c.estudo.ativo && na(c.estudo.dias, sem) && !feito("estudo")) falta.push("estudo");
       for (const x of extras) if (na(x.dias, sem) && !feito(x.id)) falta.push(x.nome.toLowerCase());
+      if (c.alimentacao.ativo !== false) {
+        const { count: nRef } = await sb.from("h_refeicoes").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("data", dia);
+        if (!nRef) falta.push("registrar as refeições");
+      }
       if (c.agua.ativo && !feito("agua")) falta.push(`água (${litros(valor("agua"))} de ${litros(c.agua.meta)})`);
       if (falta.length && await primeiraVez(uid, dia, "fechamento")) {
         await enviar(subs, "✅ Fechamento do dia", `Falta: ${falta.join(", ")}. Se já fez, marque no app.`, "fechamento");
@@ -222,13 +227,18 @@ Deno.serve(async (req) => {
             }
           }
           const pct = esperados ? Math.round((feitos / esperados) * 100) : 0;
+          const { data: refs } = await sb.from("h_refeicoes").select("data,kcal").eq("user_id", uid).gte("data", de).lte("data", dia);
+          const porDia: Record<string, number> = {};
+          for (const r of refs || []) porDia[r.data] = (porDia[r.data] || 0) + (+r.kcal || 0);
+          const diasRef = Object.values(porDia);
+          const comidaTxt = diasRef.length ? ` Média de ${Math.round(diasRef.reduce((a, b) => a + b, 0) / diasRef.length).toLocaleString("pt-BR")} kcal/dia.` : "";
           let pesoTxt = "";
           if (ps && ps.length) {
             pesoTxt = ` Peso: ${kg(ps[0].kg)} kg`;
             if (ps.length > 1) { const dif = +ps[0].kg - +ps[1].kg; pesoTxt += ` (${dif <= 0 ? "" : "+"}${kg(dif)} kg)`; }
             pesoTxt += ".";
           }
-          await enviar(subs, "📋 Revisão da semana", `Você cumpriu ${pct}% dos hábitos.${pesoTxt} Abra o app para planejar a próxima semana.`, "revisao");
+          await enviar(subs, "📋 Revisão da semana", `Você cumpriu ${pct}% dos hábitos.${pesoTxt}${comidaTxt} Abra o app para planejar a próxima semana.`, "revisao");
           log.push(`${uid.slice(0, 4)} revisao`);
         }
       }

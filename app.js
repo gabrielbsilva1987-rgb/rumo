@@ -42,10 +42,11 @@ const CFG_PADRAO = {
   fechamento: "21:30",
   extras: [],
   saude: { meta_calorias: 0, meta_passos: 0, min_treino: 20 },
+  alimentacao: { ativo: true, meta_kcal: 0, meta_proteina: 0, altura: 0, idade: 0, sexo: "m" },
 };
 function mesclarCfg(d) {
   const c = { ...CFG_PADRAO, ...(d || {}) };
-  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao", "saude"]) c[k] = { ...CFG_PADRAO[k], ...((d || {})[k] || {}) };
+  for (const k of ["leitura", "estudo", "exercicio", "agua", "sono", "peso", "revisao", "saude", "alimentacao"]) c[k] = { ...CFG_PADRAO[k], ...((d || {})[k] || {}) };
   return c;
 }
 
@@ -54,6 +55,7 @@ const DEMO = PARAMS.has("demo") || !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.i
 
 /* ============================ Utilidades ============================ */
 const $ = (s, el = document) => el.querySelector(s);
+const $$last = (s) => { const a = document.querySelectorAll(s); return a[a.length - 1]; };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function partesSP(d = new Date()) {
   const o = {};
@@ -127,6 +129,36 @@ function apiSupabase(sb, uid) {
       ok(await sb.storage.from("capas").upload(path, blob, { contentType: "image/jpeg", upsert: true }));
       return sb.storage.from("capas").getPublicUrl(path).data.publicUrl;
     },
+    async refeicoes(de) { return ok(await sb.from("h_refeicoes").select("*").gte("data", de).order("criado_em").limit(3000)); },
+    async salvarRefeicao(r) {
+      const { id, criado_em, user_id, ...x } = r;
+      if (id) return ok(await sb.from("h_refeicoes").update(x).eq("id", id).select().single());
+      return ok(await sb.from("h_refeicoes").insert(x).select().single());
+    },
+    async apagarRefeicao(r) {
+      ok(await sb.from("h_refeicoes").delete().eq("id", r.id));
+      if (r.foto) await sb.storage.from("refeicoes").remove([r.foto]);
+    },
+    async subirFotoRefeicao(blob) {
+      const path = `${uid}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      ok(await sb.storage.from("refeicoes").upload(path, blob, { contentType: "image/jpeg" }));
+      return path;
+    },
+    async urlsFotos(paths) {
+      if (!paths.length) return {};
+      const { data } = await sb.storage.from("refeicoes").createSignedUrls(paths, 3600);
+      return Object.fromEntries((data || []).filter((x) => x.signedUrl).map((x) => [x.path, x.signedUrl]));
+    },
+    async estimar(corpo) {
+      const { data, error } = await sb.functions.invoke("comida", { body: corpo });
+      if (error) {
+        let msg = "Não consegui estimar agora.";
+        try { const j = await error.context.json(); if (j?.erro) msg = j.erro; } catch {}
+        throw new Error(msg);
+      }
+      if (data?.erro) throw new Error(data.erro);
+      return data;
+    },
     async salvarSub(sub) {
       const j = sub.toJSON();
       ok(await sb.from("h_push").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, user_id: uid }, { onConflict: "endpoint" }));
@@ -159,6 +191,21 @@ function apiLocal() {
     },
     async apagarLivro(id) { G("livros", L("livros", []).filter((x) => x.id !== id)); },
     async subirCapa(blob) { return await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); },
+    async refeicoes(de) { return L("refs", []).filter((r) => r.data >= de); },
+    async salvarRefeicao(r) {
+      const a = L("refs", []);
+      const novo = r.id ? { ...a.find((x) => x.id === r.id), ...r } : { ...r, id: Date.now(), criado_em: new Date().toISOString() };
+      G("refs", [...a.filter((x) => x.id !== novo.id), novo].sort((x, y) => x.criado_em.localeCompare(y.criado_em)));
+      return novo;
+    },
+    async apagarRefeicao(r) { G("refs", L("refs", []).filter((x) => x.id !== r.id)); },
+    async subirFotoRefeicao(blob) { return await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); }); },
+    async urlsFotos(paths) { return Object.fromEntries(paths.map((p) => [p, p])); },
+    async estimar({ texto }) {
+      await new Promise((r) => setTimeout(r, 400));
+      const partes = String(texto || "prato da foto").split(/,| e |;/).map((x) => x.trim()).filter(Boolean);
+      return { itens: partes.map((nome, i) => ({ nome, porcao: "porção média", kcal: 120 + ((i * 97) % 260), proteina: 8 + i * 3, carbo: 15, gordura: 6 })), observacao: "Estimativa de exemplo (modo demonstração).", confianca: "media" };
+    },
     async salvarSub() { throw new Error("No modo demonstração não há notificações."); },
     async teste() { throw new Error("No modo demonstração não há notificações."); },
   };
@@ -198,7 +245,18 @@ function semearDemo(G) {
     { id: 4, titulo: "Essencialismo", autor: "Greg McKeown", paginas: 272, pagina_atual: 118, status: "lendo", inicio: addDias(hj, -11), fim: null, capa: null, criado_em: new Date().toISOString() },
     { id: 5, titulo: "Sapiens", autor: "Yuval Noah Harari", paginas: 464, pagina_atual: 0, status: "quero", inicio: null, fim: null, capa: null, criado_em: new Date().toISOString() },
   ]);
-  G("cfg", { saude: { meta_passos: 8000, chave: "demo" } }); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
+  const ref = (data, tipo, descricao, itens) => ({ id: Math.random(), data, tipo, descricao, foto: null, itens, kcal: itens.reduce((a, i) => a + i.kcal, 0), proteina: itens.reduce((a, i) => a + i.proteina, 0), carbo: 0, gordura: 0, criado_em: data + "T12:00:00Z" });
+  const refs = [];
+  for (let i = 20; i >= 1; i--) {
+    const d = addDias(hj, -i), x = Math.round(rnd() * 600);
+    refs.push(ref(d, "cafe", "pão com ovo e café", [{ nome: "Pão francês com ovo", porcao: "1 un", kcal: 290, proteina: 13 }, { nome: "Café com açúcar", porcao: "1 xíc", kcal: 40, proteina: 0 }]));
+    refs.push(ref(d, "almoco", "arroz, feijão, frango e salada", [{ nome: "Arroz", porcao: "4 col.", kcal: 220, proteina: 4 }, { nome: "Feijão", porcao: "1 concha", kcal: 110, proteina: 7 }, { nome: "Frango grelhado", porcao: "150 g", kcal: 240, proteina: 45 }]));
+    refs.push(ref(d, "jantar", "jantar", [{ nome: "Jantar", porcao: "prato", kcal: 650 + x, proteina: 35 }]));
+  }
+  refs.push(ref(hj, "cafe", "pão com ovo e café", [{ nome: "Pão francês com ovo", porcao: "1 un", kcal: 290, proteina: 13 }, { nome: "Café com açúcar", porcao: "1 xíc", kcal: 40, proteina: 0 }]));
+  refs.push(ref(hj, "almoco", "arroz, feijão, bife grande e salada; 1 lata de Coca", [{ nome: "Arroz branco", porcao: "4 col. de sopa (100 g)", kcal: 130, proteina: 3 }, { nome: "Feijão", porcao: "1 concha (140 g)", kcal: 110, proteina: 7 }, { nome: "Bife grande", porcao: "180 g", kcal: 390, proteina: 48 }, { nome: "Salada", porcao: "1 prato", kcal: 40, proteina: 2 }, { nome: "Coca-Cola", porcao: "350 ml", kcal: 149, proteina: 0 }]));
+  G("refs", refs);
+  G("cfg", { saude: { meta_passos: 8000, chave: "demo" }, alimentacao: { meta_kcal: 2400, meta_proteina: 160, altura: 180, idade: 39, sexo: "m" } }); G("regs", regs); G("pesos", pesos); G("revs", revs); G("ok", true);
 }
 
 /* ============================ Regras dos hábitos ============================ */
@@ -276,13 +334,14 @@ function tendenciaPeso() {
 
 /* ============================ Estado ============================ */
 const S = {
-  sb: null, api: null, cfg: mesclarCfg({}), regs: new Map(), pesos: [], revs: [], livros: [],
+  sb: null, api: null, cfg: mesclarCfg({}), regs: new Map(), pesos: [], revs: [], livros: [], refeicoes: [], fotoUrls: {}, rascunho: null,
   aba: "hoje", dia: hoje(), periodo: 30, semana: domingoDe(hoje()), inicioDados: addDias(hoje(), -400), pronto: false,
 };
 
 async function carregar() {
   const [cfg, regs, pesos, revs, livros] = await Promise.all([S.api.cfg(), S.api.regs(S.inicioDados), S.api.pesos(), S.api.revs(), S.api.livros().catch(() => [])]);
   S.livros = livros;
+  S.refeicoes = await S.api.refeicoes(addDias(hoje(), -120)).catch(() => []);
   S.cfg = cfg;
   S.regs = new Map(regs.map((r) => [`${r.data}|${r.habito}`, { ...r, valor: +r.valor }]));
   S.pesos = pesos.map((p) => ({ ...p, kg: +p.kg }));
@@ -307,6 +366,29 @@ async function apagarReg(h, d) {
   render();
   try { await S.api.apagarReg(d, h); } catch (e) { erro(e); }
 }
+/* ---------- Alimentação ---------- */
+const TIPOS_REF = [["cafe", "☕", "Café"], ["almoco", "🍽️", "Almoço"], ["lanche", "🍎", "Lanche"], ["jantar", "🌙", "Jantar"], ["ceia", "🥛", "Ceia"]];
+const tipoRef = (t) => TIPOS_REF.find((x) => x[0] === t) || TIPOS_REF[2];
+function tipoPorHora() { const m = minAgora(); return m < 630 ? "cafe" : m < 900 ? "almoco" : m < 1110 ? "lanche" : m < 1320 ? "jantar" : "ceia"; }
+const refsDia = (d) => S.refeicoes.filter((r) => r.data === d);
+function comidoDia(d) {
+  const rs = refsDia(d);
+  return { n: rs.length, kcal: rs.reduce((a, r) => a + (+r.kcal || 0), 0), prot: rs.reduce((a, r) => a + (+r.proteina || 0), 0) };
+}
+// Taxa metabólica basal (Mifflin-St Jeor) — precisa de altura e idade
+function tmb(c = S.cfg) {
+  const a = c.alimentacao || {};
+  if (!a.altura || !a.idade) return 0;
+  return Math.round(10 * pesoAtual() + 6.25 * a.altura - 5 * a.idade + (a.sexo === "f" ? -161 : 5));
+}
+function sugestaoMetas(c = S.cfg) {
+  const b = tmb(c);
+  return { kcal: b ? Math.max(c.alimentacao?.sexo === "f" ? 1200 : 1500, Math.round((b * 1.35 - 750) / 50) * 50) : 0, proteina: Math.round((+c.peso.meta || 99) * 1.6 / 5) * 5 };
+}
+// Gasto do dia = basal + calorias ativas (do app Saúde)
+function gastoDia(d) { const b = tmb(); return b ? b + (reg(d, "calorias")?.valor || 0) : 0; }
+const fmtK = (n) => num(Math.round(n), 0);
+
 /* ---------- Livros ---------- */
 function livroAtual() {
   const lendo = S.livros.filter((l) => l.status === "lendo");
@@ -480,6 +562,36 @@ function cartaoPeso(d) {
   </section>`;
 }
 
+function cartaoComida(d) {
+  const a = S.cfg.alimentacao || {};
+  if (a.ativo === false) return "";
+  const c = comidoDia(d), meta = +a.meta_kcal || 0, gasto = gastoDia(d);
+  const passou = meta && c.kcal > meta;
+  const rs = refsDia(d);
+  let saldo = "";
+  if (gasto && c.n) {
+    const dif = c.kcal - gasto;
+    saldo = `<div class="saldo ${dif <= 0 ? "bom" : "ruim"}"><span>Gasto estimado ${fmtK(gasto)} kcal</span><b>${dif <= 0 ? "Déficit" : "Superávit"} de ${fmtK(Math.abs(dif))} kcal</b></div>`;
+  }
+  return `<section class="habito comida ${passou ? "passou" : ""}" style="--c:#ff7eb3">
+    <div class="h-topo"><div class="h-ico">🍽️</div><div class="h-nome"><b>Alimentação</b><span>${meta ? `Meta ${fmtK(meta)} kcal${a.meta_proteina ? ` · ${a.meta_proteina} g de proteína` : ""}` : "Defina sua meta em Ajustes"}</span></div></div>
+    <div class="h-valor"><b>${fmtK(c.kcal)}</b><span>${meta ? `/ ${fmtK(meta)} kcal` : "kcal"}${meta ? ` · ${passou ? `<span class="desce">passou ${fmtK(c.kcal - meta)}</span>` : `restam ${fmtK(meta - c.kcal)}`}` : ""}</span></div>
+    ${meta ? barra(c.kcal / meta) : ""}
+    ${a.meta_proteina ? `<div class="prot"><span>🥩 Proteína ${c.prot} / ${a.meta_proteina} g</span><div class="barra fina"><i style="width:${Math.min(100, (c.prot / a.meta_proteina) * 100)}%;background:#ffb547"></i></div></div>` : ""}
+    ${saldo}
+    ${rs.length ? `<div class="lista-ref">${rs.map((r) => `<button class="ref" data-a="abrirRefeicao" data-id="${r.id}">
+        ${r.foto && S.fotoUrls[r.foto] ? `<img src="${esc(S.fotoUrls[r.foto])}" alt="">` : `<span class="ref-ico">${tipoRef(r.tipo)[1]}</span>`}
+        <span class="ref-txt"><b>${tipoRef(r.tipo)[2]}</b><span>${esc(r.descricao || (r.itens || []).map((i) => i.nome).join(", "))}</span></span>
+        <span class="ref-kcal">${fmtK(r.kcal)}</span></button>`).join("")}</div>` : ""}
+    <div class="acoes"><button class="b cor" data-a="novaRefeicao" data-d="${d}">+ Registrar refeição</button></div>
+  </section>`;
+}
+async function carregarFotos() {
+  const faltam = [...new Set(S.refeicoes.filter((r) => r.foto && !S.fotoUrls[r.foto] && r.data >= addDias(hoje(), -7)).map((r) => r.foto))];
+  if (!faltam.length) return;
+  try { Object.assign(S.fotoUrls, await S.api.urlsFotos(faltam)); render(); } catch {}
+}
+
 function cartaoSaude(d) {
   const cal = reg(d, "calorias"), pas = reg(d, "passos"), min = reg(d, "minutos"), sc = S.cfg.saude || {};
   if (!sc.chave && !cal && !pas && !min) return "";
@@ -527,7 +639,7 @@ function telaHoje() {
     <div class="chips-linha">${seq ? `<span class="pilula acc">🔥 ${seq} ${seq === 1 ? "dia" : "dias"} no ritmo</span>` : ""}${perdeu > 0 ? `<span class="pilula">−${num(perdeu)} kg</span>` : ""}</div></div></section>`;
   if (rev) h += `<div class="foco"><span>🎯</span><div><b>Foco da semana</b>${esc(rev.dados.foco)}</div></div>`;
   h += cartaoPeso(d);
-  for (const k of lista()) { h += cartaoHabito(k, d); if (k === "exercicio") h += cartaoSaude(d); }
+  for (const k of lista()) { h += cartaoHabito(k, d); if (k === "agua") h += cartaoComida(d); if (k === "exercicio") h += cartaoSaude(d); }
   return h;
 }
 
@@ -615,6 +727,29 @@ function telaProgresso() {
     <div class="cal">${cal}</div>
     <div class="legenda">menos <i style="background:${corPct(0)}"></i><i style="background:${corPct(0.4)}"></i><i style="background:${corPct(0.6)}"></i><i style="background:${corPct(0.85)}"></i><i style="background:${corPct(1)}"></i> mais</div>
   </section>`;
+
+  // Alimentação
+  const diasCom = [];
+  for (let d = de; d <= ate; d = addDias(d, 1)) if (refsDia(d).length) diasCom.push(d);
+  if (diasCom.length) {
+    const a = c.alimentacao, meta = +a.meta_kcal || 0;
+    const tot = diasCom.map((d) => comidoDia(d));
+    const media = tot.reduce((x, t) => x + t.kcal, 0) / tot.length, mProt = tot.reduce((x, t) => x + t.prot, 0) / tot.length;
+    const naMeta = meta ? tot.filter((t) => t.kcal <= meta).length : 0;
+    const comGasto = diasCom.filter((d) => d < hoje() && gastoDia(d) && reg(d, "calorias"));
+    const deficit = comGasto.length ? comGasto.reduce((x, d) => x + (gastoDia(d) - comidoDia(d).kcal), 0) / comGasto.length : null;
+    const dias = []; for (let d = de; d <= ate; d = addDias(d, 1)) dias.push(d);
+    const vals = dias.map((d) => comidoDia(d).kcal), max = Math.max(meta * 1.3, ...vals, 1);
+    const W = 320, Hh = 56, gap = dias.length > 40 ? 1 : 2, bw = (W - gap * (dias.length - 1)) / dias.length;
+    const barras = dias.map((d, i) => { const v = vals[i], hh = Math.max(v ? 3 : 2, (v / max) * Hh); const cor = !v ? "var(--card2)" : meta && v > meta ? "var(--ruim)" : "#ff7eb3";
+      return `<rect x="${(i * (bw + gap)).toFixed(2)}" y="${(Hh - hh).toFixed(2)}" width="${bw.toFixed(2)}" height="${hh.toFixed(2)}" rx="${Math.min(3, bw / 2)}" fill="${cor}"/>`; }).join("");
+    h += `<div class="titulo-sec">Alimentação</div><section class="cartao hab-stat" style="--c:#ff7eb3">
+      <div class="h-topo"><div class="h-ico">🍽️</div><div class="h-nome"><b>Calorias consumidas</b><span>${diasCom.length} ${diasCom.length === 1 ? "dia registrado" : "dias registrados"}${meta ? ` · meta ${fmtK(meta)}` : ""}</span></div>${meta ? `<div class="pct">${Math.round((naMeta / diasCom.length) * 100)}%</div>` : ""}</div>
+      <svg class="grafico" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none" style="height:56px">${barras}${meta ? `<line x1="0" x2="${W}" y1="${Hh - (meta / max) * Hh}" y2="${Hh - (meta / max) * Hh}" stroke="var(--txt)" stroke-opacity=".35" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ""}</svg>
+      <div class="grid2"><div class="mini"><b>${fmtK(media)}</b><span>kcal por dia (média)</span></div><div class="mini"><b>${Math.round(mProt)} g</b><span>proteína por dia</span></div>
+      ${deficit !== null ? `<div class="mini"><b class="${deficit >= 0 ? "sobe" : "desce"}">${deficit >= 0 ? "−" : "+"}${fmtK(Math.abs(deficit))}</b><span>${deficit >= 0 ? "déficit" : "superávit"} médio/dia</span></div>
+      <div class="mini"><b>${deficit >= 0 ? "−" : "+"}${num(Math.abs(deficit * 7 / 7700), 2)} kg</b><span>por semana (estimado)</span></div>` : ""}</div></section>`;
+  }
 
   // Atividade (app Saúde)
   const temSaude = ["calorias", "passos", "minutos"].some((k) => { for (let d = de; d <= ate; d = addDias(d, 1)) if (reg(d, k)) return true; return false; });
@@ -738,6 +873,44 @@ function definirCapa(url, extra = {}) {
   $("#capaResultados").innerHTML = "";
 }
 
+function modalRefeicao(r, d) {
+  S.rascunho = r ? { id: r.id, data: r.data, itens: structuredClone(r.itens || []), foto: r.foto, blob: null, b64: null, obs: "" } : { data: d || S.dia, itens: [], foto: null, blob: null, b64: null, obs: "" };
+  const tipo = r?.tipo || (S.rascunho.data === hoje() ? tipoPorHora() : "almoco");
+  const fotoUrl = r?.foto ? S.fotoUrls[r.foto] : null;
+  abrirModal(`<h3>${r ? `${tipoRef(tipo)[1]} ${tipoRef(tipo)[2]} · ${dm(r.data)}` : "🍽️ Registrar refeição"}</h3>
+  <form data-form="refeicao">
+    <div class="seg seg-form tipos-ref">${TIPOS_REF.map(([k, e, n]) => `<label><input type="radio" name="tipo" value="${k}" ${k === tipo ? "checked" : ""}><span>${e}<br>${n}</span></label>`).join("")}</div>
+    <label class="campo"><span>O que você comeu?</span><textarea name="texto" rows="3" placeholder="Ex.: arroz, feijão, um bife grande e salada; 1 lata de Coca">${esc(r?.descricao || "")}</textarea></label>
+    <p class="sub" style="margin:-6px 0 12px">🎤 Para falar, toque no microfone do teclado.</p>
+    <div class="foto-ref">
+      <div id="fotoPrev">${fotoUrl ? `<img src="${esc(fotoUrl)}" alt="">` : ""}</div>
+      <label class="b">📷 ${r?.foto ? "Trocar foto" : "Foto do prato"}<input type="file" accept="image/*" hidden data-foto-refeicao></label>
+    </div>
+    <button type="button" class="b prim largo mt" data-a="estimarRefeicao">✨ ${r ? "Estimar de novo" : "Estimar calorias"}</button>
+    <div id="estimativa">${S.rascunho.itens.length ? htmlEstimativa() : ""}</div>
+    <button class="b largo mt" type="submit" id="salvarRef" ${S.rascunho.itens.length ? "" : "hidden"} style="background:#ff7eb3;color:var(--acc-txt)">Salvar refeição</button>
+    ${r ? `<button class="b perigo largo mt" type="button" data-a="apagarRefeicao" data-id="${r.id}">Apagar refeição</button>` : `<button type="button" class="b largo mt" data-a="refManual" style="background:none;color:var(--mut);font-size:14px">Prefiro digitar as calorias</button>`}
+  </form>`);
+}
+function htmlEstimativa() {
+  const R = S.rascunho, it = R.itens;
+  const tot = it.reduce((a, i) => a + (+i.kcal || 0), 0), prot = it.reduce((a, i) => a + (+i.proteina || 0), 0);
+  return `<div class="estim">
+    ${it.map((i, n) => `<div class="item-ref"><div class="nome"><input type="text" value="${esc(i.nome)}" data-item="${n}" data-campo="nome"><small>${esc(i.porcao || "")}${i.proteina ? ` · ${i.proteina} g prot.` : ""}</small></div>
+      <input type="number" inputmode="numeric" min="0" value="${i.kcal}" data-item="${n}" data-campo="kcal"><span class="un">kcal</span>
+      <button type="button" class="x" data-a="tirarItem" data-i="${n}" aria-label="Remover">✕</button></div>`).join("")}
+    <button type="button" class="b min mt" data-a="maisItem" style="font-size:14px;height:38px">+ item</button>
+    <div class="total-ref"><span>Total</span><b id="totalRef">${fmtK(tot)} kcal</b></div>
+    <p class="sub" style="margin:4px 0 0">🥩 ${prot} g de proteína${R.obs ? ` · ${esc(R.obs)}` : ""}</p>
+  </div>`;
+}
+function atualizarEstimativa() {
+  const box = $("#estimativa");
+  if (box) box.innerHTML = S.rascunho.itens.length ? htmlEstimativa() : "";
+  const b = $("#salvarRef"); if (b) b.hidden = !S.rascunho.itens.length;
+}
+const paraBase64 = (blob) => new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.readAsDataURL(blob); });
+
 function resumoSemana(dom) {
   const seg = addDias(dom, -6), ate = hoje() < dom ? hoje() : dom;
   let prog = 0, ok = 0;
@@ -794,7 +967,7 @@ function telaSemana() {
       <label class="campo"><span>🎯 Foco da próxima semana</span><input type="text" name="foco" value="${esc(dd.foco)}" placeholder="Uma coisa só, ex.: deitar até 23h"></label>
       <div class="titulo-sec" style="margin:18px 0 10px">Metas da próxima semana</div>
       <div class="linha"><label class="campo"><span>📖 Páginas/dia</span><input type="number" name="leitura.meta" min="1" value="${c.leitura.meta}"></label>
-      <label class="campo"><span>🎓 Estudo (min)</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label></div>
+      <label class="campo"><span>🎓 Estudo (min)</span><input type="number" name="estudo.meta" min="5" step="1" value="${c.estudo.meta}"></label></div>
       <div class="linha"><label class="campo"><span>💧 Água (litros)</span><input type="text" inputmode="decimal" autocomplete="off" name="agua.litros" value="${num(c.agua.meta / 1000, 2)}"></label>
       <label class="campo"><span>🌙 Sono (horas)</span><input type="text" inputmode="decimal" autocomplete="off" name="sono.meta" value="${num(c.sono.meta)}"></label></div>
       <label class="campo" style="--c:var(--exercicio)"><span>🏋️ Dias de treino</span>${seletorDias("exercicio.dias", c.exercicio.dias)}</label>
@@ -868,7 +1041,7 @@ function telaAjustes() {
     ${bloco("sono", `${chave("sono.ativo", c.sono.ativo)}
       <div class="linha"><label class="campo"><span>Acordar às</span><input type="time" name="sono.acordar" value="${c.sono.acordar}"></label>
       <label class="campo"><span>Meta (horas)</span><input type="text" inputmode="decimal" autocomplete="off" name="sono.meta" value="${num(c.sono.meta)}"></label></div>
-      <label class="campo"><span>Avisar para desacelerar (min antes de deitar)</span><input type="number" name="sono.aviso_antes_min" min="0" step="5" value="${c.sono.aviso_antes_min}"></label>
+      <label class="campo"><span>Avisar para desacelerar (min antes de deitar)</span><input type="number" name="sono.aviso_antes_min" min="0" step="1" value="${c.sono.aviso_antes_min}"></label>
       <p class="sub">Com essa meta, o horário de deitar é ${fmtMin(hm(c.sono.acordar) - c.sono.meta * 60)}.</p>`)}
     ${bloco("leitura", `${chave("leitura.ativo", c.leitura.ativo)}
       <div class="linha"><label class="campo"><span>Páginas por dia</span><input type="number" name="leitura.meta" min="1" value="${c.leitura.meta}"></label>
@@ -878,21 +1051,33 @@ function telaAjustes() {
       <label class="campo"><span>Meta (litros por dia)</span><input type="text" inputmode="decimal" autocomplete="off" name="agua.litros" value="${num(c.agua.meta / 1000, 2)}"></label>
       <div class="linha"><label class="campo"><span>Das</span><input type="time" name="agua.inicio" value="${c.agua.inicio}"></label>
       <label class="campo"><span>Até</span><input type="time" name="agua.fim" value="${c.agua.fim}"></label></div>
-      <label class="campo"><span>Verificar a cada (min)</span><input type="number" name="agua.intervalo_min" min="30" step="15" value="${c.agua.intervalo_min}"></label>
+      <label class="campo"><span>Verificar a cada (min)</span><input type="number" name="agua.intervalo_min" min="30" step="1" value="${c.agua.intervalo_min}"></label>
       <p class="sub">O lembrete só chega se você estiver abaixo do ritmo para bater a meta.</p>`)}
     ${bloco("exercicio", `${chave("exercicio.ativo", c.exercicio.ativo)}
       <label class="campo"><span>Lembrete</span><input type="time" name="exercicio.hora" value="${c.exercicio.hora}"></label>
       <label class="campo"><span>Dias de treino</span>${seletorDias("exercicio.dias", c.exercicio.dias)}</label>
       <label class="campo"><span>Tipos (separe por vírgula)</span><input type="text" name="exercicio.tipos" value="${esc((c.exercicio.tipos || []).join(", "))}"></label>`)}
     ${bloco("estudo", `${chave("estudo.ativo", c.estudo.ativo)}
-      <div class="linha"><label class="campo"><span>Minutos por dia</span><input type="number" name="estudo.meta" min="5" step="5" value="${c.estudo.meta}"></label>
+      <div class="linha"><label class="campo"><span>Minutos por dia</span><input type="number" name="estudo.meta" min="5" step="1" value="${c.estudo.meta}"></label>
       <label class="campo"><span>Lembrete</span><input type="time" name="estudo.hora" value="${c.estudo.hora}"></label></div>
       <label class="campo"><span>Dias</span>${seletorDias("estudo.dias", c.estudo.dias)}</label>`)}
+    <details class="aj" style="--c:#ff7eb3"><summary><span class="h-ico">🍽️</span>Alimentação</summary><div class="corpo">
+      ${chave("alimentacao.ativo", c.alimentacao.ativo !== false, "Mostrar na tela Hoje")}
+      <p class="sub" style="margin-top:0">Com altura e idade, o app calcula seu gasto diário (basal + calorias ativas do Saúde) e o déficit do dia.</p>
+      <div class="linha"><label class="campo"><span>Altura (cm)</span><input type="number" name="alimentacao.altura" min="100" max="230" value="${c.alimentacao.altura || ""}"></label>
+      <label class="campo"><span>Idade</span><input type="number" name="alimentacao.idade" min="12" max="100" value="${c.alimentacao.idade || ""}"></label>
+      <label class="campo"><span>Sexo</span><select name="alimentacao.sexo"><option value="m" ${c.alimentacao.sexo !== "f" ? "selected" : ""}>M</option><option value="f" ${c.alimentacao.sexo === "f" ? "selected" : ""}>F</option></select></label></div>
+      <div class="linha"><label class="campo"><span>Meta (kcal/dia)</span><input type="number" name="alimentacao.meta_kcal" min="0" step="1" value="${c.alimentacao.meta_kcal || ""}"></label>
+      <label class="campo"><span>Proteína (g/dia)</span><input type="number" name="alimentacao.meta_proteina" min="0" step="1" value="${c.alimentacao.meta_proteina || ""}"></label></div>
+      ${(() => { const sg = sugestaoMetas(); return sg.kcal ? `<p class="sub">Sugestão para perder cerca de 0,7 kg por semana: <b style="color:var(--txt)">${fmtK(sg.kcal)} kcal</b> e <b style="color:var(--txt)">${sg.proteina} g de proteína</b> (basal ${fmtK(tmb())} kcal).</p>` : ""; })()}
+      <button type="button" class="b largo" data-a="usarSugestao">🎯 Calcular e usar sugestão</button>
+      <p class="sub" style="margin-bottom:0">É uma estimativa. Para um plano sob medida, vale conversar com um nutricionista.</p>
+    </div></details>
     <details class="aj" style="--c:#ff9f43"><summary><span class="h-ico">⌚</span>App Saúde</summary><div class="corpo">
       <p class="sub" style="margin-top:0">Calorias ativas, passos e minutos de exercício chegam do app Saúde pelo app Atalhos. Quando os minutos passam do limite abaixo, o Treino do dia é marcado sozinho.</p>
-      <div class="linha"><label class="campo"><span>Meta de calorias (kcal)</span><input type="number" name="saude.meta_calorias" min="0" step="50" value="${c.saude.meta_calorias || ""}" placeholder="opcional"></label>
-      <label class="campo"><span>Meta de passos</span><input type="number" name="saude.meta_passos" min="0" step="500" value="${c.saude.meta_passos || ""}" placeholder="opcional"></label></div>
-      <label class="campo"><span>Minutos de exercício para contar como Treino</span><input type="number" name="saude.min_treino" min="1" step="5" value="${c.saude.min_treino || 20}"></label>
+      <div class="linha"><label class="campo"><span>Meta de calorias (kcal)</span><input type="number" name="saude.meta_calorias" min="0" step="1" value="${c.saude.meta_calorias || ""}" placeholder="opcional"></label>
+      <label class="campo"><span>Meta de passos</span><input type="number" name="saude.meta_passos" min="0" step="1" value="${c.saude.meta_passos || ""}" placeholder="opcional"></label></div>
+      <label class="campo"><span>Minutos de exercício para contar como Treino</span><input type="number" name="saude.min_treino" min="1" step="1" value="${c.saude.min_treino || 20}"></label>
       <button type="button" class="b largo" data-a="configSaude">📲 Configurar o atalho</button>
     </div></details>
     <details class="aj" style="--c:var(--peso)"><summary><span class="h-ico">⚖️</span>Peso e revisão</summary><div class="corpo">
@@ -1000,6 +1185,37 @@ const ACOES = {
     const id = +el.dataset.id;
     if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Apagar?"; return; }
     try { await S.api.apagarPeso(id); S.pesos = S.pesos.filter((p) => +p.id !== id); render(); ACOES.histPeso(); toast("Pesagem apagada"); } catch (e) { erro(e); }
+  },
+  novaRefeicao(el) { modalRefeicao(null, el.dataset.d); },
+  abrirRefeicao(el) { modalRefeicao(S.refeicoes.find((r) => String(r.id) === el.dataset.id)); },
+  async estimarRefeicao(el) {
+    const f = $("form[data-form=refeicao]"), texto = f.elements.texto.value.trim();
+    if (!texto && !S.rascunho.b64) return toast("Descreva a refeição ou tire uma foto");
+    el.disabled = true; el.textContent = "✨ Estimando…";
+    try {
+      const r = await S.api.estimar({ texto, imagem: S.rascunho.b64 || undefined, tipo: tipoRef(f.elements.tipo.value)[2] });
+      if (!$("#estimativa")) return;
+      S.rascunho.itens = r.itens || []; S.rascunho.obs = r.observacao || "";
+      if (!S.rascunho.itens.length) toast(r.observacao || "Não reconheci comida aí");
+      atualizarEstimativa();
+    } catch (e) { erro(e); }
+    el.disabled = false; el.textContent = "✨ Estimar de novo";
+  },
+  refManual() { S.rascunho.itens = [{ nome: $("form[data-form=refeicao]").elements.texto.value.trim() || "Refeição", porcao: "", kcal: 0, proteina: 0, carbo: 0, gordura: 0 }]; atualizarEstimativa(); $("#estimativa input[data-campo=kcal]")?.focus(); },
+  tirarItem(el) { S.rascunho.itens.splice(+el.dataset.i, 1); atualizarEstimativa(); },
+  maisItem() { S.rascunho.itens.push({ nome: "", porcao: "", kcal: 0, proteina: 0, carbo: 0, gordura: 0 }); atualizarEstimativa(); $$last("#estimativa input[data-campo=nome]")?.focus(); },
+  async apagarRefeicao(el) {
+    if (el.dataset.conf !== "1") { el.dataset.conf = "1"; el.textContent = "Toque de novo para apagar"; return; }
+    const r = S.refeicoes.find((x) => String(x.id) === el.dataset.id);
+    try { await S.api.apagarRefeicao(r); S.refeicoes = S.refeicoes.filter((x) => x !== r); fecharModal(); render(); toast("Refeição apagada"); } catch (e) { erro(e); }
+  },
+  usarSugestao() {
+    const f = $("form[data-form=ajustes]"), c = structuredClone(S.cfg);
+    aplicarCampos(c, f, new FormData(f), ["alimentacao.altura", "alimentacao.idade", "alimentacao.sexo"]);
+    const s = sugestaoMetas(c);
+    if (!s.kcal) return toast("Preencha altura e idade primeiro");
+    f.elements["alimentacao.meta_kcal"].value = s.kcal; f.elements["alimentacao.meta_proteina"].value = s.proteina;
+    toast("Sugestão aplicada. Toque em Salvar ajustes.");
   },
   novoLivro() { modalLivro(null); },
   editarLivro(el) { modalLivro(S.livros.find((l) => String(l.id) === el.dataset.id)); },
@@ -1145,6 +1361,25 @@ const FORMS = {
       toast("📋 Revisão salva. Boa semana!");
     } catch (e) { erro(e); }
   },
+  async refeicao(f, fd) {
+    const R = S.rascunho;
+    const itens = R.itens.filter((i) => i.nome.trim() || +i.kcal).map((i) => ({ ...i, nome: i.nome.trim() || "Item", kcal: Math.max(0, Math.round(+i.kcal || 0)) }));
+    if (!itens.length) return toast("Estime ou digite as calorias primeiro");
+    const btn = $("#salvarRef"); btn.disabled = true; btn.textContent = "Salvando…";
+    try {
+      let foto = R.foto;
+      if (R.blob) foto = await S.api.subirFotoRefeicao(R.blob);
+      const soma = (k) => itens.reduce((a, i) => a + (+i[k] || 0), 0);
+      const r = { ...(R.id ? { id: R.id } : {}), data: R.data, tipo: fd.get("tipo") || "lanche", descricao: fd.get("texto").trim(), foto, itens,
+        kcal: soma("kcal"), proteina: soma("proteina"), carbo: soma("carbo"), gordura: soma("gordura") };
+      const salvo = await S.api.salvarRefeicao(r);
+      if (R.blob) S.fotoUrls[foto] = DEMO ? foto : URL.createObjectURL(R.blob);
+      S.refeicoes = [...S.refeicoes.filter((x) => x.id !== salvo.id), salvo].sort((a, b) => (a.criado_em || "").localeCompare(b.criado_em || ""));
+      fecharModal(); render();
+      const tot = comidoDia(R.data).kcal, meta = +S.cfg.alimentacao.meta_kcal || 0;
+      toast(`🍽️ +${fmtK(r.kcal)} kcal · ${meta ? (tot <= meta ? `restam ${fmtK(meta - tot)} hoje` : `passou ${fmtK(tot - meta)} da meta`) : `${fmtK(tot)} no dia`}`);
+    } catch (e) { erro(e); btn.disabled = false; btn.textContent = "Salvar refeição"; }
+  },
   async livro(f, fd) {
     const antigo = S.livros.find((l) => String(l.id) === f.dataset.id);
     const status = fd.get("status") || "lendo";
@@ -1233,6 +1468,8 @@ function aplicarCampos(c, f, fd, nomes) {
     else if (k === "litros") { if (g) c[g].meta = Math.round(parseFloat(String(fd.get(n)).replace(",", ".")) * 1000) || c[g].meta; continue; }
     else if (k === "tipos") v = String(fd.get(n)).split(",").map((s) => s.trim()).filter(Boolean);
     else if (g === "saude" && fd.get(n) === "") v = k === "min_treino" ? 20 : 0;
+    else if (g === "alimentacao" && fd.get(n) === "") v = 0;
+    else if (k === "sexo") v = fd.get(n);
     else if (tipo === "number" || tipo === "select-one" || el.inputMode === "decimal") v = parseFloat(String(fd.get(n)).replace(",", "."));
     else v = fd.get(n);
     if (typeof v === "number" && isNaN(v)) continue;
@@ -1248,6 +1485,15 @@ document.addEventListener("click", (e) => {
   if (fn) { e.preventDefault(); fn(el); }
 });
 document.addEventListener("change", async (e) => {
+  if (e.target.matches("[data-foto-refeicao]") && e.target.files[0]) {
+    try {
+      const blob = await reduzirImagem(e.target.files[0], 1024);
+      S.rascunho.blob = blob; S.rascunho.b64 = await paraBase64(blob);
+      $("#fotoPrev").innerHTML = `<img src="${URL.createObjectURL(blob)}" alt="">`;
+      toast("📷 Foto pronta. Toque em Estimar calorias.");
+    } catch (err) { erro(err); }
+    return;
+  }
   if (!e.target.matches("[data-capa-arquivo]") || !e.target.files[0]) return;
   try {
     toast("Enviando capa…");
@@ -1255,6 +1501,16 @@ document.addEventListener("change", async (e) => {
     definirCapa(await S.api.subirCapa(blob));
     toast("📷 Capa adicionada");
   } catch (err) { erro(err); }
+});
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (!el.dataset || el.dataset.item === undefined || !S.rascunho) return;
+  const i = S.rascunho.itens[+el.dataset.item];
+  if (el.dataset.campo === "nome") { i.nome = el.value; return; }
+  const novo = Math.max(0, +el.value || 0), antigo = +i.kcal || 0;
+  if (antigo > 0) { const k = novo / antigo; for (const m of ["proteina", "carbo", "gordura"]) i[m] = Math.round((+i[m] || 0) * k); }
+  i.kcal = novo;
+  const t = $("#totalRef"); if (t) t.textContent = fmtK(S.rascunho.itens.reduce((a, x) => a + (+x.kcal || 0), 0)) + " kcal";
 });
 document.addEventListener("submit", (e) => {
   const f = e.target.closest("[data-form]");
@@ -1272,6 +1528,7 @@ async function iniciarSessao() {
     }
     await carregar();
     render();
+    carregarFotos();
   } catch (e) {
     console.error(e);
     $("#app").innerHTML = `<div class="login"><div class="logo">Rumo</div><p>Não foi possível carregar seus dados.</p><p class="sub">${esc(e?.message || e)}</p><button class="b prim largo" onclick="location.reload()">Tentar de novo</button></div>`;
@@ -1293,7 +1550,7 @@ let ultimaVisita = hoje();
 document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState !== "visible" || !S.pronto || !$("#modal").hidden) return;
   if (ultimaVisita !== hoje()) { ultimaVisita = hoje(); S.dia = hoje(); S.semana = domingoDe(hoje()); }
-  try { await carregar(); render(); } catch {}
+  try { await carregar(); render(); carregarFotos(); } catch {}
 });
 
 iniciar();
